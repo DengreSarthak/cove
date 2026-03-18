@@ -1,4 +1,5 @@
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::Aead as _};
+use cove_util::ResultExt as _;
 use rand::RngExt as _;
 
 use crate::backup_data::EncryptedMasterKeyBackup;
@@ -17,9 +18,8 @@ pub fn encrypt_master_key(
     rand::rng().fill(&mut nonce_bytes);
     let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext = cipher
-        .encrypt(nonce, master_key.as_bytes().as_slice())
-        .map_err(|e| CsppError::Encrypt(e.to_string()))?;
+    let ciphertext =
+        cipher.encrypt(nonce, master_key.as_bytes().as_slice()).map_err_str(CsppError::Encrypt)?;
 
     Ok(EncryptedMasterKeyBackup { version: 1, prf_salt: *prf_salt, nonce: nonce_bytes, ciphertext })
 }

@@ -31474,6 +31474,27 @@ public func updatePricesIfNeeded()async   {
             
         )
 }
+public func csppManifestRecordId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_cove_fn_func_cspp_manifest_record_id($0
+    )
+})
+}
+public func csppMasterKeyRecordId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_cove_fn_func_cspp_master_key_record_id($0
+    )
+})
+}
+/**
+ * Re-open the database after wipe+re-bootstrap so `Database::global()`
+ * returns a handle to the fresh file instead of the deleted one
+ */
+public func reinitDatabase()  {try! rustCall() {
+    uniffi_cove_fn_func_reinit_database($0
+    )
+}
+}
 /**
  * Wipe all local encrypted databases (main db + per-wallet databases)
  *
@@ -31746,6 +31767,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_updatepricesifneeded() != 5753) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_func_cspp_manifest_record_id() != 728) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_func_cspp_master_key_record_id() != 23703) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_func_reinit_database() != 2611) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_wipe_local_data() != 61838) {

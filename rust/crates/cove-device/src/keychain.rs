@@ -107,9 +107,11 @@ impl Keychain {
 
         let cryptor = Cryptor::try_from_string(&cryptor_str)
             .map_err(|e| KeychainError::Decrypt(e.to_string()))?;
+
         let hex = cryptor
             .decrypt_from_string(&encrypted)
             .map_err(|e| KeychainError::Decrypt(e.to_string()))?;
+
         let bytes: [u8; 32] = hex::decode(hex)
             .map_err(|e| KeychainError::ParseSavedValue(e.to_string()))?
             .try_into()

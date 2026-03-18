@@ -1,4 +1,5 @@
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::Aead as _};
+use cove_util::ResultExt as _;
 use rand::RngExt as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -19,9 +20,7 @@ pub fn encrypt_wallet_entry(
 
     let mut wallet_key = derive_wallet_key(critical_data_key, &wallet_salt);
 
-    let json = Zeroizing::new(
-        serde_json::to_vec(entry).map_err(|e| CsppError::Serialization(e.to_string()))?,
-    );
+    let json = Zeroizing::new(serde_json::to_vec(entry).map_err_str(CsppError::Serialization)?);
 
     let cipher = ChaCha20Poly1305::new((&wallet_key).into());
     wallet_key.zeroize();
@@ -30,8 +29,7 @@ pub fn encrypt_wallet_entry(
     rand::rng().fill(&mut nonce_bytes);
     let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext =
-        cipher.encrypt(nonce, json.as_slice()).map_err(|e| CsppError::Encrypt(e.to_string()))?;
+    let ciphertext = cipher.encrypt(nonce, json.as_slice()).map_err_str(CsppError::Encrypt)?;
 
     Ok(EncryptedWalletBackup { version: 1, wallet_salt, nonce: nonce_bytes, ciphertext })
 }
@@ -52,7 +50,7 @@ pub fn decrypt_wallet_backup(
         cipher.decrypt(nonce, backup.ciphertext.as_slice()).map_err(|_| CsppError::WrongKey)?,
     );
 
-    serde_json::from_slice(&plaintext).map_err(|e| CsppError::Deserialization(e.to_string()))
+    serde_json::from_slice(&plaintext).map_err_str(CsppError::Deserialization)
 }
 
 #[cfg(test)]

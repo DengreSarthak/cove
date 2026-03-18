@@ -15,7 +15,7 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     // MARK: - Upload
 
     func uploadMasterKeyBackup(data: Data) throws {
-        try uploadRecord(recordId: "cspp-master-key-v1", data: data)
+        try uploadRecord(recordId: csppMasterKeyRecordId(), data: data)
     }
 
     func uploadWalletBackup(recordId: String, data: Data) throws {
@@ -23,13 +23,13 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     }
 
     func uploadManifest(data: Data) throws {
-        try uploadRecord(recordId: "cspp-manifest-v1", data: data)
+        try uploadRecord(recordId: csppManifestRecordId(), data: data)
     }
 
     // MARK: - Download
 
     func downloadMasterKeyBackup() throws -> Data {
-        try downloadRecord(recordId: "cspp-master-key-v1")
+        try downloadRecord(recordId: csppMasterKeyRecordId())
     }
 
     func downloadWalletBackup(recordId: String) throws -> Data {
@@ -37,13 +37,13 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     }
 
     func downloadManifest() throws -> Data {
-        try downloadRecord(recordId: "cspp-manifest-v1")
+        try downloadRecord(recordId: csppManifestRecordId())
     }
 
     // MARK: - Presence check
 
     func hasCloudBackup() throws -> Bool {
-        let recordID = CKRecord.ID(recordName: "cspp-manifest-v1")
+        let recordID = CKRecord.ID(recordName: csppManifestRecordId())
         let semaphore = DispatchSemaphore(value: 0)
         var fetchResult: Result<Bool, CloudStorageError>!
 

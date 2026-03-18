@@ -214,6 +214,7 @@ pub fn recover_interrupted_migrations() -> Result<()> {
             }
         };
         recover_wallet_migration(&entry.path())?;
+        recover_legacy_at_path(&entry.path().join(LEGACY_WALLET_DB))?;
     }
 
     // also clean up old-style .bak/.enc.tmp files from previous migration code

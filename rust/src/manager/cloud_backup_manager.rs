@@ -11,7 +11,8 @@ use tracing::{error, info, warn};
 use zeroize::Zeroizing;
 
 use cove_cspp::backup_data::{
-    BackupManifest, DescriptorPair, WalletEntry, WalletMode, WalletSecret, wallet_record_id,
+    BackupManifest, DescriptorPair, MANIFEST_RECORD_ID, MASTER_KEY_RECORD_ID, WalletEntry,
+    WalletMode, WalletSecret, wallet_record_id,
 };
 use cove_cspp::master_key_crypto;
 use cove_cspp::wallet_crypto;
@@ -655,6 +656,24 @@ pub fn wipe_local_data() {
     {
         error!("Failed to remove wallet data dir: {e}");
     }
+}
+
+/// Re-open the database after wipe+re-bootstrap so `Database::global()`
+/// returns a handle to the fresh file instead of the deleted one
+#[uniffi::export]
+pub fn reinit_database() {
+    crate::database::wallet_data::DATABASE_CONNECTIONS.write().clear();
+    Database::reinit();
+}
+
+#[uniffi::export]
+pub fn cspp_master_key_record_id() -> String {
+    MASTER_KEY_RECORD_ID.to_string()
+}
+
+#[uniffi::export]
+pub fn cspp_manifest_record_id() -> String {
+    MANIFEST_RECORD_ID.to_string()
 }
 
 #[cfg(test)]

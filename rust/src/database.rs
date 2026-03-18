@@ -99,6 +99,19 @@ impl Database {
         Arc::clone(&db)
     }
 
+    /// Re-open the database file and swap the global handle
+    ///
+    /// Used after wipe+re-bootstrap to point `Database::global()` at the
+    /// freshly created DB file instead of the deleted one
+    pub fn reinit() {
+        let Some(arc_swap) = DATABASE.get() else {
+            return;
+        };
+
+        let db = Self::init().expect("failed to reinitialize database");
+        arc_swap.swap(Arc::new(db));
+    }
+
     fn init() -> Result<Self, error::DatabaseError> {
         #[cfg(test)]
         crate::bootstrap::set_test_bootstrapped();

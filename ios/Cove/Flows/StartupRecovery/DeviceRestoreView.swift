@@ -135,11 +135,14 @@ struct DeviceRestoreView: View {
             return
         }
 
-        // step 3: kick off cloud restore
+        // step 3: swap database handle to the freshly created file
+        reinitDatabase()
+
+        // step 4: kick off cloud restore
         phase = .restoring
         backupManager.rust.restoreFromCloudBackup()
 
-        // step 4: observe state changes until we reach enabled or error
+        // step 5: observe state changes until we reach enabled or error
         await observeRestoreCompletion()
     }
 
@@ -167,9 +170,17 @@ struct DeviceRestoreView: View {
     }
 
     private func observeRestoreCompletion() async {
+        let startTime = ContinuousClock.now
+
         // poll state at 100ms intervals
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
+
+            let elapsed = ContinuousClock.now - startTime
+            if elapsed >= .seconds(120) {
+                phase = .error("Restore timed out. Please try again.")
+                return
+            }
 
             let currentState = backupManager.state
             let currentProgress = backupManager.progress
