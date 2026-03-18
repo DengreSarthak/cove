@@ -154,7 +154,17 @@ pub enum HardwareWalletMetadata {
 }
 
 #[derive(
-    Debug, Clone, Copy, Default, Serialize, Deserialize, Hash, Eq, PartialEq, uniffi::Enum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    Hash,
+    Eq,
+    PartialEq,
+    uniffi::Enum,
+    strum::EnumIter,
 )]
 pub enum WalletMode {
     #[default]

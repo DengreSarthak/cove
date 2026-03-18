@@ -1,6 +1,7 @@
 use std::sync::{Arc, LazyLock};
 
 use cove_cspp::CsppStore as _;
+use cove_util::ResultExt as _;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use rand::RngExt as _;
@@ -202,14 +203,14 @@ impl RustCloudBackupManager {
         // encrypt and upload master key
         let encrypted_master =
             master_key_crypto::encrypt_master_key(&master_key, &prf_key, &prf_salt)
-                .map_err(|e| CloudBackupError::Crypto(e.to_string()))?;
-        let master_json = serde_json::to_vec(&encrypted_master)
-            .map_err(|e| CloudBackupError::Internal(format!("serialize master: {e}")))?;
+                .map_err_str(CloudBackupError::Crypto)?;
+
+        let master_json =
+            serde_json::to_vec(&encrypted_master).map_err_str(CloudBackupError::Internal)?;
 
         let cloud = CloudStorage::global();
-        cloud
-            .upload_master_key_backup(master_json)
-            .map_err(|e| CloudBackupError::Cloud(e.to_string()))?;
+
+        cloud.upload_master_key_backup(master_json).map_err_str(CloudBackupError::Cloud)?;
 
         // enumerate and encrypt all wallets
         let critical_key = Zeroizing::new(master_key.critical_data_key());
@@ -217,28 +218,22 @@ impl RustCloudBackupManager {
         let db = Database::global();
 
         for network in Network::iter() {
-            for mode in [
-                crate::wallet::metadata::WalletMode::Main,
-                crate::wallet::metadata::WalletMode::Decoy,
-            ] {
-                let wallets = db
-                    .wallets
-                    .get_all(network, mode)
-                    .map_err(|e| CloudBackupError::Internal(format!("list wallets: {e}")))?;
+            for mode in crate::wallet::metadata::WalletMode::iter() {
+                let wallets =
+                    db.wallets.get_all(network, mode).map_err_str(CloudBackupError::Internal)?;
 
                 for metadata in wallets {
                     let entry = build_wallet_entry(&metadata, mode)?;
                     let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, &critical_key)
-                        .map_err(|e| CloudBackupError::Crypto(e.to_string()))?;
+                        .map_err_str(CloudBackupError::Crypto)?;
 
                     let record_id = wallet_record_id(metadata.id.as_ref());
-                    let wallet_json = serde_json::to_vec(&encrypted).map_err(|e| {
-                        CloudBackupError::Internal(format!("serialize wallet: {e}"))
-                    })?;
+                    let wallet_json =
+                        serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
 
                     cloud
                         .upload_wallet_backup(record_id.clone(), wallet_json)
-                        .map_err(|e| CloudBackupError::Cloud(e.to_string()))?;
+                        .map_err_str(CloudBackupError::Cloud)?;
 
                     wallet_record_ids.push(record_id);
                 }
@@ -251,9 +246,11 @@ impl RustCloudBackupManager {
             created_at: jiff::Timestamp::now().as_second().try_into().unwrap_or(0),
             wallet_record_ids,
         };
-        let manifest_json = serde_json::to_vec(&manifest)
-            .map_err(|e| CloudBackupError::Internal(format!("serialize manifest: {e}")))?;
-        cloud.upload_manifest(manifest_json).map_err(|e| CloudBackupError::Cloud(e.to_string()))?;
+
+        let manifest_json =
+            serde_json::to_vec(&manifest).map_err_str(CloudBackupError::Internal)?;
+
+        cloud.upload_manifest(manifest_json).map_err_str(CloudBackupError::Cloud)?;
 
         // mark enabled only after manifest succeeds
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
@@ -263,6 +260,7 @@ impl RustCloudBackupManager {
 
         self.send(Message::EnableComplete);
         self.send(Message::StateChanged(CloudBackupState::Enabled));
+
         info!("Cloud backup enabled successfully");
         Ok(())
     }
@@ -274,12 +272,10 @@ impl RustCloudBackupManager {
         let passkey = PasskeyAccess::global();
 
         // download encrypted master key to get prf_salt
-        let master_json = cloud
-            .download_master_key_backup()
-            .map_err(|e| CloudBackupError::Cloud(e.to_string()))?;
+        let master_json =
+            cloud.download_master_key_backup().map_err_str(CloudBackupError::Cloud)?;
         let encrypted_master: cove_cspp::backup_data::EncryptedMasterKeyBackup =
-            serde_json::from_slice(&master_json)
-                .map_err(|e| CloudBackupError::Internal(format!("deserialize master: {e}")))?;
+            serde_json::from_slice(&master_json).map_err_str(CloudBackupError::Internal)?;
 
         if encrypted_master.version != 1 {
             return Err(CloudBackupError::Internal(format!(
@@ -294,7 +290,7 @@ impl RustCloudBackupManager {
         let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
         let discovered = passkey
             .discover_and_authenticate_with_prf(RP_ID.to_string(), prf_salt.to_vec(), challenge)
-            .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
+            .map_err_str(CloudBackupError::Passkey)?;
 
         let prf_key: [u8; 32] = discovered
             .prf_output
@@ -323,10 +319,9 @@ impl RustCloudBackupManager {
         // local encryption key unchanged, DB already open — just import cloud wallets
 
         // download manifest
-        let manifest_json =
-            cloud.download_manifest().map_err(|e| CloudBackupError::Cloud(e.to_string()))?;
-        let manifest: BackupManifest = serde_json::from_slice(&manifest_json)
-            .map_err(|e| CloudBackupError::Internal(format!("deserialize manifest: {e}")))?;
+        let manifest_json = cloud.download_manifest().map_err_str(CloudBackupError::Cloud)?;
+        let manifest: BackupManifest =
+            serde_json::from_slice(&manifest_json).map_err_str(CloudBackupError::Internal)?;
 
         if manifest.version != 1 {
             return Err(CloudBackupError::Internal(format!(
@@ -479,7 +474,7 @@ fn obtain_prf_key(
 
     let credential_id = passkey
         .create_passkey(RP_ID.to_string(), user_id, challenge)
-        .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
+        .map_err_str(CloudBackupError::Passkey)?;
 
     // authenticate with PRF to derive wrapping key
     let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
@@ -490,7 +485,7 @@ fn obtain_prf_key(
             prf_salt.to_vec(),
             challenge,
         )
-        .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
+        .map_err_str(CloudBackupError::Passkey)?;
 
     let prf_key: [u8; 32] = prf_output
         .try_into()

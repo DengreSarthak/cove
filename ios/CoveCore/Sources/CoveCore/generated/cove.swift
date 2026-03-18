@@ -7091,6 +7091,14 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      */
     func restoreFromCloudBackup() 
     
+    /**
+     * Read persisted cloud backup state from DB and update in-memory state
+     *
+     * Called after bootstrap completes so the UI reflects the correct state
+     * even before the reconciler has delivered its first message
+     */
+    func syncPersistedState() 
+    
 }
 open class RustCloudBackupManager: RustCloudBackupManagerProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -7188,6 +7196,19 @@ open func listenForUpdates(reconciler: CloudBackupManagerReconciler)  {try! rust
      */
 open func restoreFromCloudBackup()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_restore_from_cloud_backup(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Read persisted cloud backup state from DB and update in-memory state
+     *
+     * Called after bootstrap completes so the UI reflects the correct state
+     * even before the reconciler has delivered its first message
+     */
+open func syncPersistedState()  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_sync_persisted_state(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -31456,8 +31477,8 @@ public func updatePricesIfNeeded()async   {
 /**
  * Wipe all local encrypted databases (main db + per-wallet databases)
  *
- * Used during restore (old databases are undecryptable with the new key)
- * and during "Start Fresh" flows. Shared across platforms via FFI
+ * Used during "Start Fresh" flows. Shared across platforms via FFI.
+ * Removes both current encrypted filenames and legacy plaintext filenames
  */
 public func wipeLocalData()  {try! rustCall() {
     uniffi_cove_fn_func_wipe_local_data($0
@@ -31727,7 +31748,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_func_updatepricesifneeded() != 5753) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_func_wipe_local_data() != 18165) {
+    if (uniffi_cove_checksum_func_wipe_local_data() != 61838) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_send_flow_alert_state_from_address_error() != 25696) {
@@ -32214,6 +32235,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_restore_from_cloud_backup() != 40792) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_persisted_state() != 19758) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcoincontrolmanager_button_presentation() != 24764) {
