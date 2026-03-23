@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cove_cspp::backup_data::wallet_record_id_from_filename;
 use once_cell::sync::OnceCell;
 use tracing::warn;
 
@@ -54,14 +55,8 @@ pub trait CloudStorageAccess: Send + Sync + std::fmt::Debug + 'static {
     /// List all namespace IDs (subdirectories of cspp-namespaces/)
     fn list_namespaces(&self) -> Result<Vec<String>, CloudStorageError>;
 
-    /// List wallet backup record IDs within a namespace (excludes master key file)
-    fn list_wallet_backups(&self, namespace: String) -> Result<Vec<String>, CloudStorageError>;
-
-    /// Check if any cloud backup namespaces exist
-    fn has_any_cloud_backup(&self) -> Result<bool, CloudStorageError>;
-
-    /// Delete all flat-format files directly in Data/ (legacy cleanup)
-    fn delete_all_flat_files(&self) -> Result<(), CloudStorageError>;
+    /// List wallet backup filenames within a namespace (e.g. "wallet-<hash>.json")
+    fn list_wallet_files(&self, namespace: String) -> Result<Vec<String>, CloudStorageError>;
 }
 
 static REF: OnceCell<CloudStorage> = OnceCell::new();
@@ -88,6 +83,11 @@ impl CloudStorage {
         REF.set(me).expect("failed to set cloud storage");
 
         Self::global().clone()
+    }
+
+    /// Check if any cloud backup namespaces exist
+    pub fn has_any_cloud_backup(&self) -> Result<bool, CloudStorageError> {
+        Ok(!self.list_namespaces()?.is_empty())
     }
 }
 
@@ -136,15 +136,15 @@ impl CloudStorage {
         self.0.list_namespaces()
     }
 
+    pub fn list_wallet_files(&self, namespace: String) -> Result<Vec<String>, CloudStorageError> {
+        self.0.list_wallet_files(namespace)
+    }
+
     pub fn list_wallet_backups(&self, namespace: String) -> Result<Vec<String>, CloudStorageError> {
-        self.0.list_wallet_backups(namespace)
-    }
-
-    pub fn has_any_cloud_backup(&self) -> Result<bool, CloudStorageError> {
-        self.0.has_any_cloud_backup()
-    }
-
-    pub fn delete_all_flat_files(&self) -> Result<(), CloudStorageError> {
-        self.0.delete_all_flat_files()
+        let filenames = self.0.list_wallet_files(namespace)?;
+        Ok(filenames
+            .iter()
+            .filter_map(|f| wallet_record_id_from_filename(f).map(String::from))
+            .collect())
     }
 }

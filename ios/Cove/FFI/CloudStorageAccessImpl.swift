@@ -40,61 +40,15 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
         try helper.coordinatedDelete(at: url)
     }
 
-    // MARK: - Namespace discovery
+    // MARK: - Discovery
 
     func listNamespaces() throws -> [String] {
         let namespacesRoot = try helper.namespacesRootURL()
         return try helper.listSubdirectories(parentPath: namespacesRoot.path)
     }
 
-    func listWalletBackups(namespace: String) throws -> [String] {
+    func listWalletFiles(namespace: String) throws -> [String] {
         let nsDir = try helper.namespaceDirectoryURL(namespace: namespace)
-        let walletFiles = try helper.listFiles(namespacePath: nsDir.path, prefix: "wallet-")
-
-        // extract record IDs from filenames: wallet-{hash}.json -> {hash}
-        return walletFiles.compactMap { filename in
-            guard filename.hasPrefix("wallet-"), filename.hasSuffix(".json") else { return nil }
-            let start = filename.index(filename.startIndex, offsetBy: 7) // "wallet-".count
-            let end = filename.index(filename.endIndex, offsetBy: -5) // ".json".count
-            guard start < end else { return nil }
-            return String(filename[start ..< end])
-        }
-    }
-
-    func hasAnyCloudBackup() throws -> Bool {
-        let namespaces = try listNamespaces()
-        if !namespaces.isEmpty { return true }
-
-        return try helper.hasLegacyFlatFiles()
-    }
-
-    // MARK: - Cleanup
-
-    func deleteAllFlatFiles() throws {
-        let dataDir = try helper.dataDirectoryURL()
-        let resolvedDataDir = dataDir.resolvingSymlinksInPath().path
-        let prefix = resolvedDataDir + "/"
-
-        // use NSMetadataQuery to find all .json files (including evicted cloud-only files)
-        let predicate = NSPredicate(
-            format: "%K BEGINSWITH %@ AND %K ENDSWITH[c] %@",
-            NSMetadataItemPathKey, resolvedDataDir,
-            NSMetadataItemFSNameKey, ".json"
-        )
-        let results = try helper.metadataQuery(predicate: predicate)
-
-        for item in results {
-            guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else {
-                continue
-            }
-
-            // only delete files directly in Data/, not in subdirectories
-            let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            guard resolved.hasPrefix(prefix) else { continue }
-            let relative = String(resolved.dropFirst(prefix.count))
-            guard !relative.contains("/") else { continue }
-
-            try helper.coordinatedDelete(at: URL(fileURLWithPath: path))
-        }
+        return try helper.listFiles(namespacePath: nsDir.path, prefix: "wallet-")
     }
 }

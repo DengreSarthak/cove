@@ -154,6 +154,8 @@ final class ICloudDriveHelper: @unchecked Sendable {
 
     /// Blocks until the file at `url` is confirmed uploaded to iCloud, or times out
     func waitForUpload(url: URL) throws {
+        let filename = url.lastPathComponent
+        Log.info("waitForUpload: waiting for \(filename)")
         let deadline = Date().addingTimeInterval(defaultTimeout)
 
         while Date() < deadline {
@@ -163,12 +165,13 @@ final class ICloudDriveHelper: @unchecked Sendable {
             ])
 
             if values?.ubiquitousItemIsUploaded == true {
+                Log.info("waitForUpload: \(filename) uploaded")
                 return
             }
 
             if let error = values?.ubiquitousItemUploadingError {
                 throw CloudStorageError.UploadFailed(
-                    "iCloud upload failed: \(error.localizedDescription)"
+                    "iCloud upload failed for \(filename): \(error.localizedDescription)"
                 )
             }
 
@@ -176,7 +179,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
         }
 
         throw CloudStorageError.UploadFailed(
-            "iCloud upload timed out after \(defaultTimeout)s"
+            "iCloud upload timed out for \(filename) after \(defaultTimeout)s"
         )
     }
 
@@ -307,31 +310,6 @@ final class ICloudDriveHelper: @unchecked Sendable {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
-    /// Checks for legacy flat-format .json files directly in the Data/ directory via NSMetadataQuery
-    func hasLegacyFlatFiles() throws -> Bool {
-        let dataDir = try dataDirectoryURL()
-        let resolvedDataDir = Self.resolvedPath(dataDir.path)
-        let predicate = NSPredicate(
-            format: "%K BEGINSWITH %@ AND %K ENDSWITH[c] %@",
-            NSMetadataItemPathKey, resolvedDataDir,
-            NSMetadataItemFSNameKey, ".json"
-        )
-        let results = try metadataQuery(predicate: predicate)
-
-        let prefix = resolvedDataDir + "/"
-
-        // only count .json files directly in Data/, not in subdirectories
-        return results.contains { item in
-            guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else {
-                return false
-            }
-            let resolved = Self.resolvedPath(path)
-            guard resolved.hasPrefix(prefix) else { return false }
-            let relative = String(resolved.dropFirst(prefix.count))
-            return !relative.contains("/")
-        }
-    }
-
     /// Lists subdirectory names within a given directory path using NSMetadataQuery
     ///
     /// Finds items whose path contains the parent directory and filters for directories
@@ -361,16 +339,22 @@ final class ICloudDriveHelper: @unchecked Sendable {
     }
 
     /// Lists filenames matching a prefix within a namespace directory using NSMetadataQuery
+    ///
+    /// Uses a single BEGINSWITH on path (which works across /var symlinks), then
+    /// filters by prefix in Swift — compound predicates silently return 0 on some devices
     func listFiles(namespacePath: String, prefix: String) throws -> [String] {
         let predicate = NSPredicate(
-            format: "%K BEGINSWITH %@ AND %K BEGINSWITH[c] %@",
-            NSMetadataItemPathKey, namespacePath,
-            NSMetadataItemFSNameKey, prefix
+            format: "%K BEGINSWITH %@",
+            NSMetadataItemPathKey, namespacePath
         )
         let results = try metadataQuery(predicate: predicate)
 
         return results.compactMap { item in
-            item.value(forAttribute: NSMetadataItemFSNameKey) as? String
+            guard let name = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else {
+                return nil
+            }
+            guard name.hasPrefix(prefix) else { return nil }
+            return name
         }.sorted()
     }
 
