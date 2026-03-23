@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use eyre::{Context as _, Result};
+use eyre::{Context as _, Result, bail};
 use tracing::{error, info, warn};
 
 use crate::bdk_store::sqlite_auxiliary_path;
@@ -12,6 +12,63 @@ use crate::bootstrap::Migration;
 use cove_common::consts::ROOT_DATA_DIR;
 
 use super::log_remove_file;
+
+pub struct BdkMigration {
+    dir: PathBuf,
+    migration: Arc<Migration>,
+}
+
+impl BdkMigration {
+    pub fn new(migration: Arc<Migration>) -> Self {
+        Self { dir: ROOT_DATA_DIR.to_path_buf(), migration }
+    }
+
+    pub fn run(&self) -> Result<()> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                bail!("Failed to read data directory for BDK migration: {e}");
+            }
+        };
+
+        let mut errors: Vec<String> = Vec::new();
+
+        for entry in entries {
+            if self.migration.is_cancelled() {
+                info!("BDK migration cancelled after partial progress");
+                bail!("BDK migration cancelled");
+            }
+
+            let entry = entry.context("failed to read directory entry during BDK migration")?;
+            let path = entry.path();
+
+            if needs_bdk_migration(&path) {
+                let db_display = path.display();
+                info!("Migrating BDK database at {db_display}");
+
+                match migrate_single_bdk_database(&path) {
+                    Ok(()) => self.migration.tick(),
+                    Err(e) => {
+                        error!("Failed to migrate BDK database {db_display}: {e:#}");
+                        errors.push(format!("{db_display}: {e:#}"));
+
+                        // tick even on failure to keep progress bar advancing and prevent watchdog timeout
+                        self.migration.tick();
+                    }
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            let count = errors.len();
+            let details = errors.join("; ");
+            bail!("failed to migrate {count} BDK database(s): {details}");
+        }
+
+        Ok(())
+    }
+}
 
 /// Check whether an encrypted BDK database can be opened and read
 ///
@@ -198,7 +255,7 @@ fn recover_interrupted_bdk_migrations_in_dir(dir: &Path) -> Result<()> {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            eyre::bail!("Failed to read data directory for BDK recovery: {e}");
+            bail!("Failed to read data directory for BDK recovery: {e}");
         }
     };
 
@@ -342,72 +399,18 @@ fn count_bdk_databases_in_dir(dir: &Path) -> u32 {
     count
 }
 
-pub struct BdkMigration {
-    dir: PathBuf,
-    migration: Arc<Migration>,
-}
-
-impl BdkMigration {
-    pub fn new(migration: Arc<Migration>) -> Self {
-        Self { dir: ROOT_DATA_DIR.to_path_buf(), migration }
-    }
-
-    #[cfg(test)]
-    fn with_dir(dir: PathBuf, migration: Arc<Migration>) -> Self {
-        Self { dir, migration }
-    }
-
-    pub fn run(&self) -> Result<()> {
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => {
-                eyre::bail!("Failed to read data directory for BDK migration: {e}");
-            }
-        };
-
-        let mut errors: Vec<String> = Vec::new();
-
-        for entry in entries {
-            if self.migration.is_cancelled() {
-                info!("BDK migration cancelled after partial progress");
-                eyre::bail!("BDK migration cancelled");
-            }
-
-            let entry = entry.context("failed to read directory entry during BDK migration")?;
-            let path = entry.path();
-
-            if needs_bdk_migration(&path) {
-                let db_display = path.display();
-                info!("Migrating BDK database at {db_display}");
-                match migrate_single_bdk_database(&path) {
-                    Ok(()) => self.migration.tick(),
-                    Err(e) => {
-                        error!("Failed to migrate BDK database {db_display}: {e:#}");
-                        errors.push(format!("{db_display}: {e:#}"));
-                        // tick even on failure to keep progress bar advancing and prevent watchdog timeout
-                        self.migration.tick();
-                    }
-                }
-            }
-        }
-
-        if !errors.is_empty() {
-            let count = errors.len();
-            let details = errors.join("; ");
-            eyre::bail!("failed to migrate {count} BDK database(s): {details}");
-        }
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::encrypted_backend;
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
+
+    impl BdkMigration {
+        fn with_dir(dir: PathBuf, migration: Arc<Migration>) -> Self {
+            Self { dir, migration }
+        }
+    }
 
     fn setup_test_key() {
         encrypted_backend::set_test_encryption_key();
