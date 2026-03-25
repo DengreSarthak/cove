@@ -16,7 +16,6 @@ use crate::{
 };
 
 #[derive(Debug, uniffi::Enum)]
-#[allow(clippy::enum_variant_names)]
 pub enum AppStateReconcileMessage {
     DefaultRouteChanged(Route, Vec<Route>),
     RouteUpdated(Vec<Route>),
