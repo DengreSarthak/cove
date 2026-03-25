@@ -42,7 +42,6 @@ pub type Record<T> = record::Record<T>;
 
 #[derive(Debug, Clone, uniffi::Object)]
 pub struct Database {
-    #[allow(dead_code, unused)]
     pub global_flag: GlobalFlagTable,
     pub global_config: GlobalConfigTable,
     pub global_cache: GlobalCacheTable,

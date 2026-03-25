@@ -541,9 +541,10 @@ impl Wallets {
 
     pub fn try_from_mnemonic(mnemonic: &Mnemonic, network: Network) -> Result<Self, WalletError> {
         let mut wallets = Self::default();
+        let cove_network = cove_types::Network::try_from(network).map_err(WalletError::BdkError)?;
 
         for type_ in [WalletAddressType::WrappedSegwit, WalletAddressType::Legacy] {
-            let descriptor = mnemonic.clone().into_descriptors(None, network, type_);
+            let descriptor = mnemonic.clone().into_descriptors(None, cove_network, type_);
             let wallet = BdkWallet::create(
                 descriptor.external.into_tuple(),
                 descriptor.internal.into_tuple(),

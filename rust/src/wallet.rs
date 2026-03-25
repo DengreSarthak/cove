@@ -17,9 +17,9 @@ use crate::{
     xpub::{self, XpubError},
 };
 use balance::Balance;
+use bdk_wallet::KeychainKind;
 use bdk_wallet::bitcoin::bip32::Xpub;
 use bdk_wallet::chain::rusqlite::Connection;
-use bdk_wallet::{KeychainKind, descriptor::ExtendedDescriptor, keys::DescriptorPublicKey};
 use bip39::Mnemonic;
 use cove_bdk::descriptor_ext::DescriptorExt as _;
 use cove_common::consts::GAP_LIMIT;
@@ -549,47 +549,6 @@ impl Wallet {
 
         transactions.sort_unstable_by(|a, b| a.cmp(b).reverse());
         transactions
-    }
-
-    #[allow(dead_code)]
-    pub fn public_external_descriptor(&self) -> crate::keys::Descriptor {
-        let extended_descriptor: ExtendedDescriptor =
-            self.bdk.public_descriptor(KeychainKind::External).clone();
-
-        crate::keys::Descriptor::from(extended_descriptor)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_pub_key(&self) -> Result<DescriptorPublicKey, WalletError> {
-        use bdk_wallet::miniscript::Descriptor;
-        use bdk_wallet::miniscript::descriptor::ShInner;
-
-        let extended_descriptor: ExtendedDescriptor =
-            self.bdk.public_descriptor(KeychainKind::External).clone();
-
-        let key = match extended_descriptor {
-            Descriptor::Pkh(pk) => pk.into_inner(),
-            Descriptor::Wpkh(pk) => pk.into_inner(),
-            Descriptor::Tr(pk) => pk.internal_key().clone(),
-            Descriptor::Sh(pk) => match pk.into_inner() {
-                ShInner::Wpkh(pk) => pk.into_inner(),
-                _ => {
-                    return Err(WalletError::UnsupportedWallet(
-                        "unsupported wallet bare descriptor not wpkh".to_string(),
-                    ));
-                }
-            },
-            // not sure
-            Descriptor::Bare(pk) => pk.as_inner().iter_pk().next().unwrap(),
-            // multi-sig
-            Descriptor::Wsh(_pk) => {
-                return Err(WalletError::UnsupportedWallet(
-                    "unsupported wallet, multisig".to_string(),
-                ));
-            }
-        };
-
-        Ok(key)
     }
 
     pub fn get_next_address(&mut self) -> Result<AddressInfoWithDerivation, WalletError> {

@@ -277,17 +277,14 @@ impl Address {
         let address = address.trim();
         let bdk_address = BdkAddress::from_str(address).map_err(|_| Error::InvalidAddress)?;
 
-        let network_to_check = network.into();
-        if bdk_address.is_valid_for_network(network_to_check) {
-            return Ok(Self(bdk_address.require_network(network_to_check).expect("just checked")));
+        let bitcoin_network: bitcoin::Network = network.into();
+        if bdk_address.is_valid_for_network(bitcoin_network) {
+            return Ok(Self(bdk_address.require_network(bitcoin_network).expect("just checked")));
         }
 
-        for network in Network::iter() {
-            if bdk_address.is_valid_for_network(network.into()) {
-                return Err(Error::WrongNetwork {
-                    current: network_to_check.into(),
-                    valid_for: network,
-                });
+        for net in Network::iter() {
+            if bdk_address.is_valid_for_network(net.into()) {
+                return Err(Error::WrongNetwork { current: network, valid_for: net });
             }
         }
 

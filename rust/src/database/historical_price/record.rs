@@ -1,4 +1,4 @@
-use crate::fiat::{FiatCurrency, historical::HistoricalPrice};
+use crate::fiat::historical::HistoricalPrice;
 
 /// A space-efficient version of `HistoricalPrice` where only USD is required
 /// and other currencies are optional to save space when they aren't available
@@ -78,19 +78,6 @@ fn positive_or_none(value: f32) -> Option<f32> {
 }
 
 impl HistoricalPriceRecord {
-    /// Get the price for a specific currency
-    pub const fn for_currency(&self, currency: FiatCurrency) -> Option<f32> {
-        match currency {
-            FiatCurrency::Usd => Some(self.usd),
-            FiatCurrency::Eur => self.eur,
-            FiatCurrency::Gbp => self.gbp,
-            FiatCurrency::Cad => self.cad,
-            FiatCurrency::Chf => self.chf,
-            FiatCurrency::Aud => self.aud,
-            FiatCurrency::Jpy => self.jpy,
-        }
-    }
-
     /// Convert from bytes
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         // at minimum we need 1+8+4 = 13 bytes

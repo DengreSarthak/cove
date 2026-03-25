@@ -73,9 +73,12 @@ impl BdkStore {
 
         // get the metadata for the wallet
         let mode = Database::global().global_config().wallet_mode();
+        let cove_network =
+            cove_types::Network::try_from(self.network).map_err(|e| eyre::eyre!(e))?;
+
         let Some(mut metadata) = Database::global()
             .wallets()
-            .get(id, self.network.into(), mode)
+            .get(id, cove_network, mode)
             .context("unable to get metadata for wallet")?
         else {
             // if not metdata found this is a new wallet so we can just return

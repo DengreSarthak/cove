@@ -114,28 +114,6 @@ impl HistoricalPriceService {
         Ok(txns_with_prices)
     }
 
-    #[allow(dead_code)]
-    pub async fn get_price_for_transaction(
-        &self,
-        network: Network,
-        txn: &ConfirmedTransaction,
-        currency: FiatCurrency,
-    ) -> Result<Option<f32>> {
-        let block_number = txn.block_height();
-
-        // we have a record for this block number
-        if let Ok(Some(price)) = self.db.get_price_for_block(network, block_number) {
-            return Ok(price.for_currency(currency));
-        }
-
-        // don't have a record for this block number lets try to get it
-        let price = self
-            .get_and_save_price_for_timestamp(network, block_number, txn.confirmed_at())
-            .await?;
-
-        Ok(price.for_currency(currency))
-    }
-
     /// Get historical price for a block, fetching from API if not cached
     pub async fn get_price_for_block(
         &self,

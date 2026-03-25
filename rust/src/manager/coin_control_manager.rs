@@ -25,7 +25,6 @@ use tracing::trace;
 
 use super::deferred_sender::MessageSender;
 
-#[allow(dead_code)]
 type Message = CoinControlManagerReconcileMessage;
 type Action = CoinControlManagerAction;
 type State = state::CoinControlManagerState;
@@ -41,7 +40,6 @@ pub trait CoinControlManagerReconciler: Send + Sync + std::fmt::Debug + 'static 
 }
 
 #[derive(Clone, Debug, uniffi::Object)]
-#[allow(dead_code)]
 pub struct RustCoinControlManager {
     pub state: Arc<Mutex<State>>,
     pub reconciler: MessageSender<Message>,

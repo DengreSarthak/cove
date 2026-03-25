@@ -186,45 +186,6 @@ impl LabelsTable {
 
     // MARK: GET
 
-    #[allow(dead_code)]
-    fn get_label_record(&self, label: Label) -> Result<Option<Record<Label>>, Error> {
-        match label {
-            Label::Transaction(txn) => {
-                let record = self.get_txn_label_record(txn.ref_)?;
-                Ok(record.map(Record::into))
-            }
-
-            Label::Address(address_record) => {
-                let table = self.read_table(ADDRESS_TABLE)?;
-                let record = table.get(address_record.ref_)?.map(|record| record.value());
-                Ok(record.map(Record::into))
-            }
-
-            Label::Input(input_record) => {
-                let table = self.read_table(INPUT_TABLE)?;
-                let key: OutPointKey = input_record.ref_.into();
-
-                let record = table.get(key)?.map(|record| record.value());
-                Ok(record.map(Record::into))
-            }
-
-            Label::Output(output_record) => {
-                let table = self.read_table(OUTPUT_TABLE)?;
-                let key: OutPointKey = output_record.ref_.into();
-
-                let record = table.get(key)?.map(|record| record.value());
-                Ok(record.map(Record::into))
-            }
-
-            // unsupported label types
-            Label::ExtendedPublicKey(_) => {
-                Err(Error::UnsupportedLabelType("extended public key".to_string()))
-            }
-
-            Label::PublicKey(_) => Err(Error::UnsupportedLabelType("public key".to_string())),
-        }
-    }
-
     pub fn get_txn_label_record(
         &self,
         txid: impl Borrow<bitcoin::Txid>,

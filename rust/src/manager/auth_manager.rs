@@ -20,7 +20,7 @@ type Message = AuthManagerReconcileMessage;
 pub static AUTH_MANAGER: LazyLock<Arc<RustAuthManager>> = LazyLock::new(RustAuthManager::init);
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Enum)]
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names)] // all variants describe state changes, postfix is intentional
 pub enum AuthManagerReconcileMessage {
     AuthTypeChanged(AuthType),
     WipeDataPinChanged,

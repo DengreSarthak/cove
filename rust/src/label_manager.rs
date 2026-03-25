@@ -15,8 +15,6 @@ use cove_types::{TxId, confirm::QrDensity};
 
 #[derive(Debug, Clone, uniffi::Object)]
 pub struct LabelManager {
-    #[allow(dead_code)]
-    id: WalletId,
     db: WalletDataDb,
 }
 
@@ -83,9 +81,9 @@ impl AddressArgs {
 impl LabelManager {
     #[uniffi::constructor]
     pub fn new(id: WalletId) -> Self {
-        let db = WalletDataDb::new_or_existing(id.clone())
+        let db = WalletDataDb::new_or_existing(id)
             .expect("failed to open wallet database for label manager");
-        Self { id, db }
+        Self { db }
     }
 
     pub fn export_default_file_name(&self, name: String) -> String {
@@ -295,8 +293,8 @@ impl LabelManager {
     pub fn try_new(
         id: WalletId,
     ) -> std::result::Result<Self, crate::database::wallet_data::WalletDataError> {
-        let db = WalletDataDb::new_or_existing(id.clone())?;
-        Ok(Self { id, db })
+        let db = WalletDataDb::new_or_existing(id)?;
+        Ok(Self { db })
     }
 
     pub fn import_labels(&self, labels: impl Into<Labels>) -> Result<(), LabelManagerError> {

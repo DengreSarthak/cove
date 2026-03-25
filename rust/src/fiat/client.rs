@@ -83,12 +83,6 @@ impl FiatClient {
     fn new() -> Self {
         Self { url: CURRENCY_URL.to_string(), client: OnceCell::new() }
     }
-
-    #[allow(dead_code)]
-    fn new_with_url(url: String) -> Self {
-        Self { url, client: OnceCell::new() }
-    }
-
     /// Sync method using cached prices only, returns None if no cache
     pub fn value_in_currency_cached(&self, amount: Amount, currency: FiatCurrency) -> Option<f64> {
         let btc = amount.as_btc();

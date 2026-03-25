@@ -553,7 +553,7 @@ impl WalletActor {
             })
             .collect();
 
-        let more_details = InputOutputDetails::new_with_labels(&psbt, network.into(), extras);
+        let more_details = InputOutputDetails::new_with_labels(&psbt, self.wallet.network, extras);
         let fee_percentage = fee.to_sat() * 100 / output_amount.to_sat();
 
         let details = ConfirmDetails {

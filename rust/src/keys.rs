@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-use std::str::FromStr as _;
-
 use bdk_wallet::bitcoin::bip32::{DerivationPath, Fingerprint};
 use bdk_wallet::chain::miniscript::descriptor::DescriptorType;
 use bdk_wallet::descriptor::ExtendedDescriptor;
@@ -12,10 +9,9 @@ use bdk_wallet::{CreateParams, KeychainKind};
 use bdk_wallet::{
     keys::{DescriptorPublicKey as BdkDescriptorPublicKey, KeyMap},
     miniscript::descriptor::{DescriptorXKey, Wildcard},
-    template::{Bip44, Bip49, Bip84, Bip84Public, DescriptorTemplate as _},
+    template::{Bip44, Bip49, Bip84, DescriptorTemplate as _},
 };
 use bitcoin::bip32::Xpub;
-use bitcoin::secp256k1;
 use cove_bdk::descriptor_ext::DescriptorExt as _;
 
 use crate::tap_card::tap_signer_reader::DeriveInfo;
@@ -67,13 +63,6 @@ pub struct Descriptor {
 }
 
 impl Descriptors {
-    pub fn new_from_public(external: ExtendedDescriptor, internal: ExtendedDescriptor) -> Self {
-        Self {
-            external: Descriptor::new_from_public(external),
-            internal: Descriptor::new_from_public(internal),
-        }
-    }
-
     pub fn into_create_params(self) -> CreateParams {
         bdk_wallet::Wallet::create(self.external.into_tuple(), self.internal.into_tuple())
     }
@@ -152,21 +141,6 @@ impl Descriptors {
 }
 
 impl Descriptor {
-    pub const fn new_from_public(extended_descriptor: ExtendedDescriptor) -> Self {
-        Self { extended_descriptor, key_map: KeyMap::new() }
-    }
-
-    /// Parse a descriptor string into a `Descriptor` struct.
-    pub fn parse_public_descriptor(descriptor: &str) -> Result<Self, Error> {
-        let secp = &secp256k1::Secp256k1::signing_only();
-        let (descriptor, key_map) =
-            bdk_wallet::miniscript::Descriptor::<BdkDescriptorPublicKey>::parse_descriptor(
-                secp, descriptor,
-            )?;
-
-        Ok(Self { extended_descriptor: descriptor, key_map })
-    }
-
     pub fn descriptor_public_key(&self) -> Result<&BdkDescriptorPublicKey, Error> {
         self.extended_descriptor.descriptor_public_key().map_err(Into::into)
     }
@@ -177,14 +151,6 @@ impl Descriptor {
 
     pub fn full_origin(&self) -> Result<String, Error> {
         self.extended_descriptor.full_origin().map_err(Into::into)
-    }
-
-    pub fn origin(&self) -> Result<&(Fingerprint, DerivationPath), Error> {
-        self.extended_descriptor.origin().map_err(Into::into)
-    }
-
-    pub fn derivation_path(&self) -> Result<DerivationPath, Error> {
-        self.extended_descriptor.derivation_path().map_err(Into::into)
     }
 
     /// BIP84 for P2WPKH (Segwit)
@@ -209,37 +175,6 @@ impl Descriptor {
             }
 
             BdkDescriptorSecretKey::Single(_) => {
-                unreachable!()
-            }
-        }
-    }
-
-    /// BIP84 for P2WPKH (Segwit)
-    #[allow(dead_code)]
-    pub(crate) fn new_bip84_public(
-        public_key: &BdkDescriptorPublicKey,
-        fingerprint: String,
-        keychain_kind: KeychainKind,
-        network: Network,
-    ) -> Self {
-        let fingerprint = Fingerprint::from_str(fingerprint.as_str()).unwrap();
-        let derivable_key = public_key;
-
-        match derivable_key {
-            BdkDescriptorPublicKey::XPub(descriptor_x_key) => {
-                let derivable_key = descriptor_x_key.xkey;
-                let (extended_descriptor, key_map, _) =
-                    Bip84Public(derivable_key, fingerprint, keychain_kind)
-                        .build(network.into())
-                        .unwrap();
-
-                Self { extended_descriptor, key_map }
-            }
-            BdkDescriptorPublicKey::MultiXPub(_) => {
-                unreachable!()
-            }
-
-            BdkDescriptorPublicKey::Single(_) => {
                 unreachable!()
             }
         }
@@ -349,8 +284,22 @@ impl From<cove_bdk::descriptor_ext::Error> for DescriptorKeyParseError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use super::*;
     use pretty_assertions::assert_eq;
+
+    impl Descriptor {
+        fn parse_public_descriptor(descriptor: &str) -> Result<Self, Error> {
+            let secp = &bitcoin::secp256k1::Secp256k1::signing_only();
+            let (descriptor, key_map) =
+                bdk_wallet::miniscript::Descriptor::<BdkDescriptorPublicKey>::parse_descriptor(
+                    secp, descriptor,
+                )?;
+
+            Ok(Self { extended_descriptor: descriptor, key_map })
+        }
+    }
 
     fn desc() -> &'static str {
         "wpkh([817e7be0/84h/0h/0h]xpub6CiKnWv7PPyyeb4kCwK4fidKqVjPfD9TP6MiXnzBVGZYNanNdY3mMvywcrdDc6wK82jyBSd95vsk26QujnJWPrSaPfYeyW7NyX37HHGtfQM/<0;1>/*)#60tjs4c7"

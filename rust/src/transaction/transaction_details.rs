@@ -46,6 +46,9 @@ pub enum TransactionDetailError {
     #[error("Unable to get change address: {0}")]
     ChangeAddress(String),
 
+    #[error("Unsupported network: {0}")]
+    UnsupportedNetwork(String),
+
     #[error("Transaction not found")]
     NotFound,
 }
@@ -83,7 +86,7 @@ impl TransactionDetails {
         let sent_and_received: SentAndReceived = wallet.sent_and_received(&tx.tx_node.tx).into();
         let chain_postition = &tx.chain_position;
         let tx_details = wallet.get_tx(txid).ok_or(Error::NotFound)?.tx_node.tx;
-        let network = Network::from(wallet.network());
+        let network = Network::try_from(wallet.network()).map_err(Error::UnsupportedNetwork)?;
 
         let fee = wallet
             .calculate_fee(&tx_details)

@@ -103,17 +103,16 @@ impl From<Network> for bitcoin::Network {
     }
 }
 
-#[allow(clippy::fallible_impl_from)] // regtest is deliberately unsupported
-impl From<bitcoin::Network> for Network {
-    /// # Panics
-    /// Panics if the network is not supported (Regtest)
-    fn from(network: bitcoin::Network) -> Self {
+impl TryFrom<bitcoin::Network> for Network {
+    type Error = String;
+
+    fn try_from(network: bitcoin::Network) -> Result<Self, Self::Error> {
         match network {
-            bitcoin::Network::Bitcoin => Self::Bitcoin,
-            bitcoin::Network::Testnet => Self::Testnet,
-            bitcoin::Network::Testnet4 => Self::Testnet4,
-            bitcoin::Network::Signet => Self::Signet,
-            network @ bitcoin::Network::Regtest => panic!("unsupported network: {network:?}"),
+            bitcoin::Network::Bitcoin => Ok(Self::Bitcoin),
+            bitcoin::Network::Testnet => Ok(Self::Testnet),
+            bitcoin::Network::Testnet4 => Ok(Self::Testnet4),
+            bitcoin::Network::Signet => Ok(Self::Signet),
+            _ => Err(format!("unsupported network: {network:?}")),
         }
     }
 }
