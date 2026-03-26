@@ -25,7 +25,10 @@ impl RustCloudBackupManager {
     /// Verifies the master key is in the keychain and backup files exist in iCloud.
     /// Returns None if everything is OK, Some(warning) if there's a problem
     pub(super) fn verify_backup_integrity_impl(&self) -> Option<String> {
-        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+        if !matches!(
+            *self.state.read(),
+            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
+        ) {
             return None;
         }
 
@@ -90,12 +93,18 @@ impl RustCloudBackupManager {
     /// Deep verification of cloud backup integrity
     ///
     /// Checks state, runs do_deep_verify, wraps errors, persists result
-    pub(crate) fn deep_verify_cloud_backup(&self) -> DeepVerificationResult {
-        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+    pub(crate) fn deep_verify_cloud_backup(
+        &self,
+        force_discoverable: bool,
+    ) -> DeepVerificationResult {
+        if !matches!(
+            *self.state.read(),
+            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
+        ) {
             return DeepVerificationResult::NotEnabled;
         }
 
-        let result = match self.do_deep_verify_cloud_backup() {
+        let result = match self.do_deep_verify_cloud_backup(force_discoverable) {
             Ok(result) => result,
             Err(error) => {
                 error!("Deep verification unexpected error: {error}");
@@ -117,12 +126,19 @@ impl RustCloudBackupManager {
 
         let (last_sync, wallet_count) = match &current {
             CloudBackup::Enabled { last_sync, wallet_count }
-            | CloudBackup::Unverified { last_sync, wallet_count } => (*last_sync, *wallet_count),
+            | CloudBackup::Unverified { last_sync, wallet_count }
+            | CloudBackup::PasskeyMissing { last_sync, wallet_count } => {
+                (*last_sync, *wallet_count)
+            }
             CloudBackup::Disabled => return,
         };
 
         let new_state = match result {
             DeepVerificationResult::Verified(_) => CloudBackup::Enabled { last_sync, wallet_count },
+            DeepVerificationResult::PasskeyConfirmed(_) => return,
+            DeepVerificationResult::PasskeyMissing(_) => {
+                CloudBackup::PasskeyMissing { last_sync, wallet_count }
+            }
             DeepVerificationResult::UserCancelled(_) | DeepVerificationResult::Failed(_) => {
                 CloudBackup::Unverified { last_sync, wallet_count }
             }
@@ -167,7 +183,8 @@ impl RustCloudBackupManager {
 
     pub(crate) fn do_deep_verify_cloud_backup(
         &self,
+        force_discoverable: bool,
     ) -> Result<DeepVerificationResult, CloudBackupError> {
-        VerificationSession::new(self)?.run()
+        VerificationSession::new(self, force_discoverable)?.run()
     }
 }

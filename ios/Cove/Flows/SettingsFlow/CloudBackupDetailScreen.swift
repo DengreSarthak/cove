@@ -5,6 +5,7 @@ struct CloudBackupDetailScreen: View {
     @State private var syncHealth: ICloudDriveHelper.SyncHealth = .noFiles
     @State private var showRecreateConfirmation = false
     @State private var showReinitializeConfirmation = false
+    @State private var hasAutoVerified = false
 
     private var isVerifying: Bool {
         if case .verifying = manager.verification { return true }
@@ -13,7 +14,7 @@ struct CloudBackupDetailScreen: View {
 
     private var hasVerificationResult: Bool {
         switch manager.verification {
-        case .verified, .failed, .cancelled: true
+        case .verified, .passkeyConfirmed, .failed, .cancelled: true
         default: false
         }
     }
@@ -52,6 +53,13 @@ struct CloudBackupDetailScreen: View {
         .task {
             refreshSyncHealth()
             manager.dispatch(.refreshDetail)
+
+            if CloudBackupManager.shared.rust.isCloudBackupPasskeyMissing() {
+                manager.dispatch(.repairPasskey)
+            } else if !hasAutoVerified {
+                hasAutoVerified = true
+                manager.dispatch(.startVerificationDiscoverable)
+            }
         }
         .onChange(of: manager.detail) { _, _ in
             refreshSyncHealth()

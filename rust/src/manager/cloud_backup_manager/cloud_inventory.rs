@@ -22,9 +22,9 @@ impl CloudWalletInventory {
         let db = Database::global();
         let local_wallets = all_local_wallets(&db);
         let last_sync = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { last_sync, .. } | CloudBackup::Unverified { last_sync, .. } => {
-                last_sync
-            }
+            CloudBackup::Enabled { last_sync, .. }
+            | CloudBackup::Unverified { last_sync, .. }
+            | CloudBackup::PasskeyMissing { last_sync, .. } => last_sync,
             CloudBackup::Disabled => None,
         };
         let cloud_wallet_record_ids = merged_cloud_wallet_record_ids(&db, wallet_record_ids);

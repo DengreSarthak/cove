@@ -26,37 +26,41 @@ impl VerificationSession<'_> {
         &self,
         prf_salt: &[u8; 32],
     ) -> Result<PasskeyAuthOutcome, CloudBackupError> {
-        let stored_credential_id: Option<Vec<u8>> =
-            self.keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
-                hex::decode(hex_str)
-                    .inspect_err(|error| warn!("Failed to decode stored credential_id: {error}"))
-                    .ok()
-            });
+        if !self.force_discoverable {
+            let stored_credential_id: Option<Vec<u8>> =
+                self.keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
+                    hex::decode(hex_str)
+                        .inspect_err(|error| {
+                            warn!("Failed to decode stored credential_id: {error}")
+                        })
+                        .ok()
+                });
 
-        if let Some(ref credential_id) = stored_credential_id {
-            let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-            match self.passkey.authenticate_with_prf(
-                RP_ID.to_string(),
-                credential_id.clone(),
-                prf_salt.to_vec(),
-                challenge,
-            ) {
-                Ok(prf_output) => {
-                    let prf_key: [u8; 32] = prf_output.try_into().map_err(|_| {
-                        CloudBackupError::Internal("PRF output is not 32 bytes".into())
-                    })?;
+            if let Some(ref credential_id) = stored_credential_id {
+                let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+                match self.passkey.authenticate_with_prf(
+                    RP_ID.to_string(),
+                    credential_id.clone(),
+                    prf_salt.to_vec(),
+                    challenge,
+                ) {
+                    Ok(prf_output) => {
+                        let prf_key: [u8; 32] = prf_output.try_into().map_err(|_| {
+                            CloudBackupError::Internal("PRF output is not 32 bytes".into())
+                        })?;
 
-                    return Ok(PasskeyAuthOutcome::Authenticated(AuthenticatedPasskey {
-                        prf_key,
-                        credential_id: credential_id.clone(),
-                        credential_recovered: false,
-                    }));
-                }
-                Err(PasskeyError::UserCancelled) => {
-                    return Ok(PasskeyAuthOutcome::UserCancelled);
-                }
-                Err(error) => {
-                    info!("Stored credential auth failed ({error}), trying discovery");
+                        return Ok(PasskeyAuthOutcome::Authenticated(AuthenticatedPasskey {
+                            prf_key,
+                            credential_id: credential_id.clone(),
+                            credential_recovered: false,
+                        }));
+                    }
+                    Err(PasskeyError::UserCancelled) => {
+                        return Ok(PasskeyAuthOutcome::UserCancelled);
+                    }
+                    Err(error) => {
+                        info!("Stored credential auth failed ({error}), trying discovery");
+                    }
                 }
             }
         }

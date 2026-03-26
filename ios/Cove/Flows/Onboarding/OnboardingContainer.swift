@@ -176,7 +176,7 @@ private struct CloudCheckView: View {
                 await Self.checkForCloudBackup { attempt in
                     await MainActor.run {
                         withAnimation(.easeInOut(duration: 0.3)) {
-                            progress = Double(attempt) / Double(maxAttempts)
+                            progress = Double(attempt) / Double(Self.maxAttempts)
                         }
                     }
                 }

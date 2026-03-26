@@ -10,7 +10,7 @@ private extension VerificationState {
 
     var hasResult: Bool {
         switch self {
-        case .verified, .failed, .cancelled: true
+        case .verified, .passkeyConfirmed, .failed, .cancelled: true
         default: false
         }
     }
@@ -62,10 +62,30 @@ struct VerificationSection: View {
             }
         case let .verified(report):
             verifiedSection(report)
+        case .passkeyConfirmed:
+            passkeyConfirmedSection
         case let .failed(failure):
             failureSection(failure)
         case .cancelled:
             cancelledSection
+        }
+    }
+
+    private var passkeyConfirmedSection: some View {
+        Section {
+            Label("Passkey verified", systemImage: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+
+            Text("Your stored passkey is valid. Run a full verification to confirm wallet backups can be decrypted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button {
+                manager.dispatch(.startVerification)
+            } label: {
+                Label("Run Full Verification", systemImage: "checkmark.shield")
+            }
+            .disabled(isBusy)
         }
     }
 

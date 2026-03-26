@@ -17,7 +17,7 @@ impl RustCloudBackupManager {
     /// On other errors, returns AccessError so the UI can offer a re-upload button
     pub(crate) fn refresh_cloud_backup_detail(&self) -> Option<CloudBackupDetailResult> {
         let state = self.state.read().clone();
-        if !matches!(state, CloudBackupState::Enabled) {
+        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
             info!("refresh_cloud_backup_detail: skipping, state={state:?}");
             return None;
         }

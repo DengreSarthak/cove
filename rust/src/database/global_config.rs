@@ -35,14 +35,19 @@ pub enum CloudBackup {
         #[serde(default)]
         wallet_count: Option<u32>,
     },
+    PasskeyMissing {
+        last_sync: Option<u64>,
+        #[serde(default)]
+        wallet_count: Option<u32>,
+    },
 }
 
 impl CloudBackup {
     pub(crate) fn wallet_count(&self) -> Option<u32> {
         match self {
-            Self::Enabled { wallet_count, .. } | Self::Unverified { wallet_count, .. } => {
-                *wallet_count
-            }
+            Self::Enabled { wallet_count, .. }
+            | Self::Unverified { wallet_count, .. }
+            | Self::PasskeyMissing { wallet_count, .. } => *wallet_count,
             Self::Disabled => None,
         }
     }
@@ -55,6 +60,9 @@ impl CloudBackup {
             }
             Self::Unverified { last_sync, .. } => {
                 Self::Unverified { last_sync: *last_sync, wallet_count }
+            }
+            Self::PasskeyMissing { last_sync, .. } => {
+                Self::PasskeyMissing { last_sync: *last_sync, wallet_count }
             }
         }
     }

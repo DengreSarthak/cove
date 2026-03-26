@@ -297,6 +297,21 @@ struct MainSettingsScreen: View {
                     .onTapGesture {
                         app.pushRoute(Route.settings(.cloudBackup))
                     }
+                case .passkeyMissing:
+                    HStack {
+                        Image(systemName: "exclamationmark.icloud")
+                            .foregroundStyle(.orange)
+                        Text("Cloud Backup — Passkey Missing")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(Color(UIColor.tertiaryLabel))
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        app.pushRoute(Route.settings(.cloudBackup))
+                    }
                 case .restoring:
                     HStack {
                         ProgressView()

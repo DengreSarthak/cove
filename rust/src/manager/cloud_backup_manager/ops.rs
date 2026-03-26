@@ -147,9 +147,9 @@ impl RustCloudBackupManager {
         let wallet_count = wallet_record_ids.len() as u32;
         let db = Database::global();
         let last_sync = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { last_sync, .. } | CloudBackup::Unverified { last_sync, .. } => {
-                last_sync
-            }
+            CloudBackup::Enabled { last_sync, .. }
+            | CloudBackup::Unverified { last_sync, .. }
+            | CloudBackup::PasskeyMissing { last_sync, .. } => last_sync,
             CloudBackup::Disabled => None,
         };
         let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {

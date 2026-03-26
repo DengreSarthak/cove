@@ -80,7 +80,8 @@ impl RustCloudBackupManager {
 
         let previous_count = match db.global_config.cloud_backup() {
             CloudBackup::Enabled { wallet_count: Some(count), .. }
-            | CloudBackup::Unverified { wallet_count: Some(count), .. } => count,
+            | CloudBackup::Unverified { wallet_count: Some(count), .. }
+            | CloudBackup::PasskeyMissing { wallet_count: Some(count), .. } => count,
             _ => 0,
         };
         let wallet_count = previous_count + wallets.len() as u32;

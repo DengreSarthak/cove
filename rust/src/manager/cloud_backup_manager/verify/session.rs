@@ -1,8 +1,9 @@
+use cove_cspp::CsppStore as _;
 use cove_cspp::master_key::MasterKey;
 use cove_cspp::master_key_crypto;
 use cove_cspp::wallet_crypto;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
-use cove_device::keychain::Keychain;
+use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, Keychain};
 use cove_device::passkey::PasskeyAccess;
 use cove_util::ResultExt as _;
 use tracing::{info, warn};
@@ -10,7 +11,7 @@ use zeroize::Zeroizing;
 
 use super::super::{
     CloudBackupDetail, CloudBackupError, DeepVerificationFailure, DeepVerificationReport,
-    DeepVerificationResult, RustCloudBackupManager, VerificationFailureKind,
+    DeepVerificationResult, RP_ID, RustCloudBackupManager, VerificationFailureKind,
     cloud_inventory::CloudWalletInventory,
 };
 use super::passkey_auth::PasskeyAuthOutcome;
@@ -45,10 +46,14 @@ pub(super) struct VerificationSession<'a> {
     pub(super) local_master_key: Option<MasterKey>,
     pub(super) wallet_record_ids: Option<Vec<String>>,
     pub(super) wallets_missing: bool,
+    pub(super) force_discoverable: bool,
 }
 
 impl<'a> VerificationSession<'a> {
-    pub(super) fn new(manager: &'a RustCloudBackupManager) -> Result<Self, CloudBackupError> {
+    pub(super) fn new(
+        manager: &'a RustCloudBackupManager,
+        force_discoverable: bool,
+    ) -> Result<Self, CloudBackupError> {
         let keychain = Keychain::global().clone();
         let cspp = cove_cspp::Cspp::new(keychain.clone());
         let local_master_key = cspp
@@ -74,6 +79,7 @@ impl<'a> VerificationSession<'a> {
             local_master_key,
             wallet_record_ids: None,
             wallets_missing: false,
+            force_discoverable,
         })
     }
 
@@ -189,9 +195,7 @@ impl<'a> VerificationSession<'a> {
         let authenticated = match self.authenticate_with_fallback(&prf_salt)? {
             PasskeyAuthOutcome::Authenticated(result) => result,
             PasskeyAuthOutcome::UserCancelled => {
-                return Ok(MasterKeyResolution::Finished(DeepVerificationResult::UserCancelled(
-                    self.detail(),
-                )));
+                return Ok(MasterKeyResolution::Finished(self.resolve_cancellation_outcome()));
             }
             PasskeyAuthOutcome::NoCredentialFound => {
                 if self.local_master_key.is_some() {
@@ -417,5 +421,31 @@ impl<'a> VerificationSession<'a> {
             message: message.into(),
             detail: self.detail(),
         })
+    }
+
+    /// When the user cancels the discoverable passkey picker, check if the
+    /// stored credential still exists. If it does the backup is healthy and
+    /// we avoid downgrading persisted state. If the credential is gone the
+    /// passkey is durably missing and the user needs repair
+    fn resolve_cancellation_outcome(&self) -> DeepVerificationResult {
+        let stored_credential_id: Option<Vec<u8>> =
+            self.keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
+                hex::decode(hex_str)
+                    .inspect_err(|error| warn!("Failed to decode stored credential_id: {error}"))
+                    .ok()
+            });
+
+        if let Some(credential_id) = stored_credential_id {
+            if self.passkey.check_passkey_exists(RP_ID.to_string(), credential_id) {
+                info!("Passkey picker cancelled but stored credential still exists");
+                return DeepVerificationResult::PasskeyConfirmed(self.detail());
+            }
+
+            info!("Passkey picker cancelled and stored credential failed silent check");
+        } else {
+            info!("Passkey picker cancelled and no stored credential found");
+        }
+
+        DeepVerificationResult::PasskeyMissing(self.detail())
     }
 }

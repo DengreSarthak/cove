@@ -40,6 +40,7 @@ pub enum CloudBackupState {
     Enabling,
     Restoring,
     Enabled,
+    PasskeyMissing,
     Error(String),
 }
 
@@ -99,6 +100,8 @@ pub struct CloudBackupDetail {
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum DeepVerificationResult {
     Verified(DeepVerificationReport),
+    PasskeyConfirmed(Option<CloudBackupDetail>),
+    PasskeyMissing(Option<CloudBackupDetail>),
     UserCancelled(Option<CloudBackupDetail>),
     NotEnabled,
     Failed(DeepVerificationFailure),
@@ -287,6 +290,7 @@ impl RustCloudBackupManager {
                 CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
                     CloudBackupState::Enabled
                 }
+                CloudBackup::PasskeyMissing { .. } => CloudBackupState::PasskeyMissing,
                 CloudBackup::Disabled => CloudBackupState::Disabled,
             };
 
@@ -303,13 +307,23 @@ impl RustCloudBackupManager {
         let db = Database::global();
         matches!(
             db.global_config.cloud_backup(),
-            CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. }
+            CloudBackup::Enabled { .. }
+                | CloudBackup::Unverified { .. }
+                | CloudBackup::PasskeyMissing { .. }
         )
     }
 
     /// Whether the persisted cloud backup state is unverified
     pub fn is_cloud_backup_unverified(&self) -> bool {
         matches!(Database::global().global_config.cloud_backup(), CloudBackup::Unverified { .. })
+    }
+
+    /// Whether the persisted cloud backup passkey is missing
+    pub fn is_cloud_backup_passkey_missing(&self) -> bool {
+        matches!(
+            Database::global().global_config.cloud_backup(),
+            CloudBackup::PasskeyMissing { .. }
+        )
     }
 
     pub fn has_pending_cloud_upload_verification(&self) -> bool {
@@ -408,7 +422,10 @@ impl RustCloudBackupManager {
     ///
     /// Returns immediately if cloud backup isn't enabled (e.g. during restore)
     pub fn backup_new_wallet(&self, metadata: crate::wallet::metadata::WalletMetadata) {
-        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+        if !matches!(
+            *self.state.read(),
+            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
+        ) {
             return;
         }
 

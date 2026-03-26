@@ -21,6 +21,7 @@ pub enum VerificationState {
     Idle,
     Verifying,
     Verified(DeepVerificationReport),
+    PasskeyConfirmed,
     Failed(DeepVerificationFailure),
     Cancelled,
 }
@@ -56,6 +57,7 @@ pub enum CloudOnlyOperation {
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum CloudBackupDetailAction {
     StartVerification,
+    StartVerificationDiscoverable,
     RecreateManifest,
     ReinitializeBackup,
     RepairPasskey,
@@ -118,7 +120,10 @@ impl RustCloudBackupDetailManager {
     pub fn dispatch(&self, action: CloudBackupDetailAction) {
         let this = self.clone();
         cove_tokio::task::spawn_blocking(move || match action {
-            CloudBackupDetailAction::StartVerification => this.handle_start_verification(),
+            CloudBackupDetailAction::StartVerification => this.handle_start_verification(false),
+            CloudBackupDetailAction::StartVerificationDiscoverable => {
+                this.handle_start_verification(true)
+            }
             CloudBackupDetailAction::RecreateManifest => {
                 this.handle_recovery(RecoveryAction::RecreateManifest)
             }
@@ -150,11 +155,11 @@ impl RustCloudBackupDetailManager {
         &CLOUD_BACKUP_MANAGER
     }
 
-    fn handle_start_verification(&self) {
+    fn handle_start_verification(&self, force_discoverable: bool) {
         self.send(Message::VerificationChanged(VerificationState::Verifying));
         let mgr = self.backup_manager();
 
-        let result = mgr.deep_verify_cloud_backup();
+        let result = mgr.deep_verify_cloud_backup(force_discoverable);
 
         match result {
             DeepVerificationResult::Verified(report) => {
@@ -162,6 +167,19 @@ impl RustCloudBackupDetailManager {
                     self.send(Message::DetailUpdated(detail.clone()));
                 }
                 self.send(Message::VerificationChanged(VerificationState::Verified(report)));
+            }
+            DeepVerificationResult::PasskeyConfirmed(detail) => {
+                if let Some(detail) = detail {
+                    self.send(Message::DetailUpdated(detail));
+                }
+                self.send(Message::VerificationChanged(VerificationState::PasskeyConfirmed));
+            }
+            DeepVerificationResult::PasskeyMissing(detail) => {
+                if let Some(detail) = detail {
+                    self.send(Message::DetailUpdated(detail));
+                }
+                // auto-start passkey repair without requiring a separate user action
+                self.handle_recovery(RecoveryAction::RepairPasskey);
             }
             DeepVerificationResult::UserCancelled(detail) => {
                 if let Some(detail) = detail {
@@ -192,7 +210,7 @@ impl RustCloudBackupDetailManager {
         match result {
             Ok(()) => {
                 self.send(Message::RecoveryChanged(RecoveryState::Idle));
-                self.handle_start_verification();
+                self.handle_start_verification(false);
             }
             Err(e) => {
                 self.send(Message::RecoveryChanged(RecoveryState::Failed {
