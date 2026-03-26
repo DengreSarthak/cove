@@ -611,104 +611,82 @@ final class ICloudDriveHelper: @unchecked Sendable {
         return .notDownloaded
     }
 
-    /// Lists immediate subdirectory names within a parent path via FileManager
+    /// Lists immediate subdirectory names within a parent path
     ///
-    /// Handles iCloud evicted directories that appear as hidden .icloud stubs
+    /// Tries FileManager first (fast, sees .icloud stubs and dataless files),
+    /// falls back to metadata query only if FileManager finds nothing
     func listSubdirectories(parentPath: String) throws -> [String] {
         let parentURL = URL(fileURLWithPath: parentPath, isDirectory: true)
-        var names = Set<String>()
-        var localError: Error?
-        var metadataError: Error?
 
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: parentURL, includingPropertiesForKeys: [.isDirectoryKey],
-                options: []
-            )
-
-            for url in contents {
-                var name = url.lastPathComponent
-
-                // iCloud evicted entries appear as .Name.icloud
-                if name.hasPrefix("."), name.hasSuffix(".icloud") {
-                    name = String(name.dropFirst().dropLast(".icloud".count))
-                    names.insert(name)
-                    continue
-                }
-
-                if url.hasDirectoryPath {
-                    names.insert(name)
-                }
-            }
-        } catch {
-            localError = error
+        if let names = try? listSubdirectoriesViaFileManager(parentURL: parentURL), !names.isEmpty {
+            return names.sorted()
         }
 
-        do {
-            let metadataNames = try metadataSubdirectoryNames(parentDirectoryURL: parentURL)
-            names.formUnion(metadataNames)
-        } catch {
-            metadataError = error
-        }
-
-        if names.isEmpty, let metadataError {
-            throw metadataError
-        }
-
-        if names.isEmpty, let localError {
-            throw localError
-        }
-
-        return names.sorted()
+        Log.info("listSubdirectories: FileManager found nothing, falling back to metadata query")
+        return try metadataSubdirectoryNames(parentDirectoryURL: parentURL)
     }
 
-    /// Lists filenames matching a prefix within a namespace directory via FileManager
+    private func listSubdirectoriesViaFileManager(parentURL: URL) throws -> [String] {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: parentURL, includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        )
+
+        var names = Set<String>()
+        for url in contents {
+            var name = url.lastPathComponent
+
+            // iCloud evicted entries appear as .Name.icloud
+            if name.hasPrefix("."), name.hasSuffix(".icloud") {
+                name = String(name.dropFirst().dropLast(".icloud".count))
+                names.insert(name)
+                continue
+            }
+
+            if url.hasDirectoryPath {
+                names.insert(name)
+            }
+        }
+
+        return Array(names)
+    }
+
+    /// Lists filenames matching a prefix within a namespace directory
     ///
-    /// Handles iCloud evicted files (.icloud stubs) by stripping the stub wrapper
+    /// Tries FileManager first (fast, sees .icloud stubs and dataless files),
+    /// falls back to metadata query only if FileManager finds nothing
     func listFiles(namespacePath: String, prefix: String) throws -> [String] {
         let dirURL = URL(fileURLWithPath: namespacePath, isDirectory: true)
+
+        if let names = try? listFilesViaFileManager(dirURL: dirURL, prefix: prefix), !names.isEmpty {
+            return names.sorted()
+        }
+
+        Log.info("listFiles: FileManager found nothing, falling back to metadata query prefix=\(prefix)")
+        return try metadataFileNames(parentDirectoryURL: dirURL, prefix: prefix)
+    }
+
+    private func listFilesViaFileManager(dirURL: URL, prefix: String) throws -> [String] {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: dirURL, includingPropertiesForKeys: nil,
+            options: []
+        )
+
         var names = Set<String>()
-        var localError: Error?
-        var metadataError: Error?
+        for url in contents {
+            var name = url.lastPathComponent
 
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: dirURL, includingPropertiesForKeys: nil,
-                options: []
-            )
-
-            for url in contents {
-                var name = url.lastPathComponent
-
-                // iCloud evicted files appear as .FileName.icloud
-                if name.hasPrefix("."), name.hasSuffix(".icloud") {
-                    name = String(name.dropFirst().dropLast(".icloud".count))
-                }
-
-                if name.hasPrefix(prefix) {
-                    names.insert(name)
-                }
+            // iCloud evicted files appear as .FileName.icloud
+            if name.hasPrefix("."), name.hasSuffix(".icloud") {
+                name = String(name.dropFirst().dropLast(".icloud".count))
             }
-        } catch {
-            localError = error
+
+            if name.hasPrefix(prefix) {
+                names.insert(name)
+            }
         }
 
-        do {
-            let metadataNames = try metadataFileNames(parentDirectoryURL: dirURL, prefix: prefix)
-            names.formUnion(metadataNames)
-        } catch {
-            metadataError = error
-        }
-
-        if names.isEmpty, let metadataError {
-            throw metadataError
-        }
-
-        if names.isEmpty, let localError {
-            throw localError
-        }
-
-        return names.sorted()
+        return Array(names)
     }
 
     // MARK: - Upload status for UI

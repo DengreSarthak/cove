@@ -142,7 +142,12 @@ extension ICloudDriveHelper {
     /// Runs an NSMetadataQuery and returns all matching items
     ///
     /// Must NOT be called from the main thread
-    func metadataQuery(predicate: NSPredicate) throws -> [NSMetadataItem] {
+    func metadataQuery(
+        predicate: NSPredicate,
+        searchScopes: [Any] = [NSMetadataQueryUbiquitousDataScope],
+        timeout: TimeInterval? = nil
+    ) throws -> [NSMetadataItem] {
+        let effectiveTimeout = timeout ?? defaultTimeout
         let finishQuery = {
             (session: MetadataQuerySession<Result<[NSMetadataItem], CloudStorageError>>, reason: String)
             in
@@ -157,9 +162,9 @@ extension ICloudDriveHelper {
 
         Log.info("metadataQuery: starting predicate=\(predicate.predicateFormat)")
         let result = runMetadataResultQuery(
-            searchScopes: [NSMetadataQueryUbiquitousDataScope],
+            searchScopes: searchScopes,
             predicate: predicate,
-            timeout: defaultTimeout,
+            timeout: effectiveTimeout,
             onStartFailure: { session in
                 session.box.removeAll()
                 session.finish(.failure(.NotAvailable("failed to start iCloud metadata query")))
@@ -302,7 +307,7 @@ extension ICloudDriveHelper {
         }
 
         let result = runMetadataOptionalQuery(
-            searchScopes: [parentDirectoryURL],
+            searchScopes: [NSMetadataQueryUbiquitousDataScope],
             predicate: NSPredicate(value: true),
             timeout: 5,
             onStartFailure: { session in
@@ -464,7 +469,10 @@ extension ICloudDriveHelper {
     ) throws -> [String] {
         let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
         let pathPrefix = resolvedParent + "/"
-        let items = try metadataQuery(predicate: NSPredicate(value: true))
+        let items = try metadataQuery(
+            predicate: NSPredicate(value: true),
+            timeout: 5
+        )
         var names = Set<String>()
 
         for item in items {
