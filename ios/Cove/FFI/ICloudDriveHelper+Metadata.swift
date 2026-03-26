@@ -37,44 +37,24 @@ private final class MetadataQuerySession<Value> {
     }
 }
 
+private struct OptionalMetadataQueryResult<Value> {
+    let value: Value?
+}
+
 extension ICloudDriveHelper {
     // MARK: - Cloud presence via NSMetadataQuery
 
-    /// Runs an NSMetadataQuery and returns all matching items
-    ///
-    /// Must NOT be called from the main thread
-    func metadataQuery(predicate: NSPredicate) throws -> [NSMetadataItem] {
-        let session = MetadataQuerySession<Result<[NSMetadataItem], CloudStorageError>>()
-
-        let captureResults = {
-            (0 ..< session.query.resultCount).compactMap {
-                session.query.result(at: $0) as? NSMetadataItem
-            }
-        }
-
-        let finishQuery = { (reason: String) in
-            let results = captureResults()
-            Log.info(
-                "metadataQuery: finalized reason=\(reason) count=\(results.count) predicate=\(predicate.predicateFormat)"
-            )
-            session.finish(.success(results), disableUpdates: true)
-        }
-
+    private func startMetadataQuery(
+        _ session: MetadataQuerySession<some Any>,
+        searchScopes: [Any],
+        predicate: NSPredicate,
+        onStartFailure: @escaping () -> Void,
+        onFinishGathering: @escaping () -> Void,
+        onUpdate: @escaping () -> Void
+    ) {
         DispatchQueue.main.async {
-            session.query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
+            session.query.searchScopes = searchScopes
             session.query.predicate = predicate
-
-            let scheduleFinalize = { (reason: String) in
-                session.finalizeWorkItem?.cancel()
-                let workItem = DispatchWorkItem {
-                    finishQuery(reason)
-                }
-                session.finalizeWorkItem = workItem
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + self.metadataSettleInterval,
-                    execute: workItem
-                )
-            }
 
             session.box.add(
                 NotificationCenter.default.addObserver(
@@ -82,10 +62,7 @@ extension ICloudDriveHelper {
                     object: session.query,
                     queue: .main
                 ) { _ in
-                    Log.info(
-                        "metadataQuery: finish gathering count=\(session.query.resultCount) predicate=\(predicate.predicateFormat)"
-                    )
-                    scheduleFinalize("finish")
+                    onFinishGathering()
                 }
             )
             session.box.add(
@@ -94,25 +71,119 @@ extension ICloudDriveHelper {
                     object: session.query,
                     queue: .main
                 ) { _ in
-                    Log.info(
-                        "metadataQuery: update count=\(session.query.resultCount) predicate=\(predicate.predicateFormat)"
-                    )
-                    scheduleFinalize("update")
+                    onUpdate()
                 }
             )
 
-            Log.info("metadataQuery: starting predicate=\(predicate.predicateFormat)")
             if !session.query.start() {
-                session.box.removeAll()
-                session.finish(.failure(.NotAvailable("failed to start iCloud metadata query")))
+                onStartFailure()
             }
         }
+    }
 
-        guard let result = session.wait(timeout: defaultTimeout) else {
-            session.finishOnMain(
-                .failure(.NotAvailable("iCloud metadata query timed out"))
-            )
+    private func runMetadataResultQuery<Value, Failure: Error>(
+        searchScopes: [Any],
+        predicate: NSPredicate,
+        timeout: TimeInterval,
+        onStartFailure: @escaping (MetadataQuerySession<Result<Value, Failure>>) -> Void,
+        onTimeout: @escaping (MetadataQuerySession<Result<Value, Failure>>) -> Void,
+        onFinishGathering: @escaping (MetadataQuerySession<Result<Value, Failure>>) -> Void,
+        onUpdate: @escaping (MetadataQuerySession<Result<Value, Failure>>) -> Void
+    ) -> Result<Value, Failure>? {
+        let session = MetadataQuerySession<Result<Value, Failure>>()
+
+        startMetadataQuery(
+            session,
+            searchScopes: searchScopes,
+            predicate: predicate,
+            onStartFailure: { onStartFailure(session) },
+            onFinishGathering: { onFinishGathering(session) },
+            onUpdate: { onUpdate(session) }
+        )
+
+        guard let value = session.wait(timeout: timeout) else {
+            onTimeout(session)
             _ = session.wait(timeout: 1)
+            return nil
+        }
+
+        return value
+    }
+
+    private func runMetadataOptionalQuery<Value>(
+        searchScopes: [Any],
+        predicate: NSPredicate,
+        timeout: TimeInterval,
+        onStartFailure: @escaping (MetadataQuerySession<OptionalMetadataQueryResult<Value>>) -> Void,
+        onTimeout: @escaping (MetadataQuerySession<OptionalMetadataQueryResult<Value>>) -> Void,
+        onFinishGathering: @escaping (MetadataQuerySession<OptionalMetadataQueryResult<Value>>) -> Void,
+        onUpdate: @escaping (MetadataQuerySession<OptionalMetadataQueryResult<Value>>) -> Void
+    ) -> (didComplete: Bool, value: Value?) {
+        let session = MetadataQuerySession<OptionalMetadataQueryResult<Value>>()
+
+        startMetadataQuery(
+            session,
+            searchScopes: searchScopes,
+            predicate: predicate,
+            onStartFailure: { onStartFailure(session) },
+            onFinishGathering: { onFinishGathering(session) },
+            onUpdate: { onUpdate(session) }
+        )
+
+        guard let result = session.wait(timeout: timeout) else {
+            onTimeout(session)
+            _ = session.wait(timeout: 1)
+            return (false, nil)
+        }
+
+        return (true, result.value)
+    }
+
+    /// Runs an NSMetadataQuery and returns all matching items
+    ///
+    /// Must NOT be called from the main thread
+    func metadataQuery(predicate: NSPredicate) throws -> [NSMetadataItem] {
+        let finishQuery = {
+            (session: MetadataQuerySession<Result<[NSMetadataItem], CloudStorageError>>, reason: String)
+            in
+            let results = (0 ..< session.query.resultCount).compactMap {
+                session.query.result(at: $0) as? NSMetadataItem
+            }
+            Log.info(
+                "metadataQuery: finalized reason=\(reason) count=\(results.count) predicate=\(predicate.predicateFormat)"
+            )
+            session.finish(.success(results), disableUpdates: true)
+        }
+
+        Log.info("metadataQuery: starting predicate=\(predicate.predicateFormat)")
+        let result = runMetadataResultQuery(
+            searchScopes: [NSMetadataQueryUbiquitousDataScope],
+            predicate: predicate,
+            timeout: defaultTimeout,
+            onStartFailure: { session in
+                session.box.removeAll()
+                session.finish(.failure(.NotAvailable("failed to start iCloud metadata query")))
+            },
+            onTimeout: { session in
+                session.finishOnMain(.failure(.NotAvailable("iCloud metadata query timed out")))
+            },
+            onFinishGathering: {
+                (session: MetadataQuerySession<Result<[NSMetadataItem], CloudStorageError>>) in
+                Log.info(
+                    "metadataQuery: finish gathering count=\(session.query.resultCount) predicate=\(predicate.predicateFormat)"
+                )
+                self.scheduleFinalize(session, finishQuery: finishQuery, reason: "finish")
+            },
+            onUpdate: {
+                (session: MetadataQuerySession<Result<[NSMetadataItem], CloudStorageError>>) in
+                Log.info(
+                    "metadataQuery: update count=\(session.query.resultCount) predicate=\(predicate.predicateFormat)"
+                )
+                self.scheduleFinalize(session, finishQuery: finishQuery, reason: "update")
+            }
+        )
+
+        guard let result else {
             throw CloudStorageError.NotAvailable("iCloud metadata query timed out")
         }
 
@@ -121,6 +192,27 @@ extension ICloudDriveHelper {
             return results
         case let .failure(error):
             throw error
+        }
+    }
+
+    private func scheduleFinalize<Value>(
+        _ session: MetadataQuerySession<Value>,
+        finishQuery: @escaping (MetadataQuerySession<Value>, String) -> Void,
+        reason: String
+    ) {
+        DispatchQueue.main.async {
+            let scheduleFinalize = { (reason: String) in
+                session.finalizeWorkItem?.cancel()
+                let workItem = DispatchWorkItem {
+                    finishQuery(session, reason)
+                }
+                session.finalizeWorkItem = workItem
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + self.metadataSettleInterval,
+                    execute: workItem
+                )
+            }
+            scheduleFinalize(reason)
         }
     }
 
@@ -198,9 +290,7 @@ extension ICloudDriveHelper {
         focusName: String
     ) {
         let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
-        let session = MetadataQuerySession<Void>()
-
-        let finish = {
+        let finish = { (session: MetadataQuerySession<OptionalMetadataQueryResult<Void>>) in
             let summaries = Self.metadataItemSummaries(in: session.query)
             Log.info(
                 "metadataItems: reason=\(reason) focus=\(focusName) parent=\(resolvedParent) count=\(summaries.count)"
@@ -208,44 +298,28 @@ extension ICloudDriveHelper {
             for summary in summaries {
                 Log.info("metadataItems: \(summary)")
             }
-            session.finish(())
+            session.finish(OptionalMetadataQueryResult(value: ()))
         }
 
-        DispatchQueue.main.async {
-            session.query.searchScopes = [parentDirectoryURL]
-            session.query.predicate = NSPredicate(value: true)
-
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidFinishGathering,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    finish()
-                }
-            )
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidUpdate,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    finish()
-                }
-            )
-
-            if !session.query.start() {
+        let result = runMetadataOptionalQuery(
+            searchScopes: [parentDirectoryURL],
+            predicate: NSPredicate(value: true),
+            timeout: 5,
+            onStartFailure: { session in
                 Log.info(
                     "metadataItems: failed to start reason=\(reason) focus=\(focusName) parent=\(resolvedParent)"
                 )
                 session.box.removeAll()
-                session.finish(())
-            }
-        }
+                session.finish(OptionalMetadataQueryResult(value: ()))
+            },
+            onTimeout: { session in
+                session.finishOnMain(OptionalMetadataQueryResult(value: ()))
+            },
+            onFinishGathering: finish,
+            onUpdate: finish
+        )
 
-        guard session.wait(timeout: 5) != nil else {
-            session.finishOnMain(())
-            _ = session.wait(timeout: 1)
+        guard result.didComplete else {
             Log.info(
                 "metadataItems: timed out reason=\(reason) focus=\(focusName) parent=\(resolvedParent)"
             )
@@ -260,9 +334,12 @@ extension ICloudDriveHelper {
     ) throws -> ResolvedMetadataItem {
         let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
         let predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, name)
-        let session = MetadataQuerySession<Result<ResolvedMetadataItem, MetadataLookupError>>()
-
-        let finish = { (item: ResolvedMetadataItem?, error: MetadataLookupError?) in
+        let finish = {
+            (
+                session: MetadataQuerySession<Result<ResolvedMetadataItem, MetadataLookupError>>,
+                item: ResolvedMetadataItem?,
+                error: MetadataLookupError?
+            ) in
             if let error {
                 session.finish(.failure(error))
                 return
@@ -278,66 +355,59 @@ extension ICloudDriveHelper {
             )
         }
 
-        DispatchQueue.main.async {
-            session.query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
-            session.query.predicate = predicate
-
-            let evaluate = { (reason: String) in
-                if let item = Self.resolvedItem(
-                    named: name,
-                    under: resolvedParent,
-                    in: session.query
-                ) {
-                    Log.info(
-                        "metadataLookup: resolved name=\(name) reason=\(reason) url=\(item.url.path) metadataPath=\(item.metadataPath ?? "<unknown>")"
-                    )
-                    finish(item, nil)
-                    return
-                }
-
+        let evaluate = {
+            (
+                session: MetadataQuerySession<Result<ResolvedMetadataItem, MetadataLookupError>>,
+                reason: String
+            ) in
+            if let item = Self.resolvedItem(
+                named: name,
+                under: resolvedParent,
+                in: session.query
+            ) {
                 Log.info(
-                    "metadataLookup: no match yet name=\(name) reason=\(reason) count=\(session.query.resultCount) parent=\(resolvedParent)"
+                    "metadataLookup: resolved name=\(name) reason=\(reason) url=\(item.url.path) metadataPath=\(item.metadataPath ?? "<unknown>")"
                 )
-                for summary in Self.metadataItemSummaries(in: session.query) {
-                    Log.info("metadataLookup: item \(summary)")
-                }
+                finish(session, item, nil)
+                return
             }
 
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidFinishGathering,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    evaluate("finish")
-                }
-            )
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidUpdate,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    evaluate("update")
-                }
-            )
-
             Log.info(
-                "metadataLookup: starting name=\(name) parent=\(resolvedParent) predicate=\(predicate.predicateFormat)"
+                "metadataLookup: no match yet name=\(name) reason=\(reason) count=\(session.query.resultCount) parent=\(resolvedParent)"
             )
-            if !session.query.start() {
-                finish(
-                    nil,
-                    .startFailed("failed to start iCloud metadata query for \(name)")
-                )
+            for summary in Self.metadataItemSummaries(in: session.query) {
+                Log.info("metadataLookup: item \(summary)")
             }
         }
 
-        guard let result = session.wait(timeout: deadline.timeIntervalSinceNow) else {
-            session.finishOnMain(
-                .failure(.timedOut("iCloud metadata query timed out for \(name)"))
-            )
-            _ = session.wait(timeout: 1)
+        Log.info(
+            "metadataLookup: starting name=\(name) parent=\(resolvedParent) predicate=\(predicate.predicateFormat)"
+        )
+        let result = runMetadataResultQuery(
+            searchScopes: [NSMetadataQueryUbiquitousDataScope],
+            predicate: predicate,
+            timeout: deadline.timeIntervalSinceNow,
+            onStartFailure: { session in
+                finish(
+                    session,
+                    nil,
+                    .startFailed("failed to start iCloud metadata query for \(name)")
+                )
+            },
+            onTimeout: { session in
+                session.finishOnMain(
+                    .failure(.timedOut("iCloud metadata query timed out for \(name)"))
+                )
+            },
+            onFinishGathering: { session in
+                evaluate(session, "finish")
+            },
+            onUpdate: { session in
+                evaluate(session, "update")
+            }
+        )
+
+        guard let result else {
             throw MetadataLookupError.timedOut("iCloud metadata query timed out for \(name)")
         }
 
@@ -355,48 +425,37 @@ extension ICloudDriveHelper {
     ) -> ResolvedMetadataItem? {
         let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
         let predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, name)
-        let session = MetadataQuerySession<ResolvedMetadataItem?>()
 
-        let finish = {
-            let match = Self.resolvedItem(named: name, under: resolvedParent, in: session.query)
-            session.finish(match)
-        }
-
-        DispatchQueue.main.async {
-            session.query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
-            session.query.predicate = predicate
-
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidFinishGathering,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    finish()
-                }
-            )
-            session.box.add(
-                NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidUpdate,
-                    object: session.query,
-                    queue: .main
-                ) { _ in
-                    finish()
-                }
-            )
-
-            if !session.query.start() {
-                finish()
+        let result: (didComplete: Bool, value: ResolvedMetadataItem?) = runMetadataOptionalQuery(
+            searchScopes: [NSMetadataQueryUbiquitousDataScope],
+            predicate: predicate,
+            timeout: 5,
+            onStartFailure: { session in
+                session.finish(OptionalMetadataQueryResult(value: nil))
+            },
+            onTimeout: { session in
+                session.finishOnMain(OptionalMetadataQueryResult(value: nil))
+            },
+            onFinishGathering: { session in
+                let match = Self.resolvedItem(
+                    named: name,
+                    under: resolvedParent,
+                    in: session.query
+                )
+                session.finish(OptionalMetadataQueryResult(value: match))
+            },
+            onUpdate: { session in
+                let match = Self.resolvedItem(
+                    named: name,
+                    under: resolvedParent,
+                    in: session.query
+                )
+                session.finish(OptionalMetadataQueryResult(value: match))
             }
-        }
+        )
 
-        guard let match = session.wait(timeout: 5) else {
-            session.finishOnMain(nil)
-            _ = session.wait(timeout: 1)
-            return nil
-        }
-
-        return match
+        guard result.didComplete else { return nil }
+        return result.value
     }
 
     private func metadataNames(

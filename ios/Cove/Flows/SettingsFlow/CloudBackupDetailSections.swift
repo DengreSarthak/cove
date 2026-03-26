@@ -121,76 +121,123 @@ struct CloudOnlySection: View {
 
     var body: some View {
         Section(header: Text("Not on This Device")) {
-            switch manager.cloudOnly {
-            case .notFetched, .loading:
-                HStack {
-                    ProgressView()
-                        .padding(.trailing, 8)
-                    Text("Loading...")
-                }
-                .foregroundStyle(.secondary)
-                .task {
-                    manager.dispatch(.fetchCloudOnly)
-                }
-
-            case let .loaded(wallets):
-                ForEach(wallets, id: \.name) { item in
-                    Button {
-                        selectedWallet = item
-                    } label: {
-                        HStack {
-                            if manager.cloudOnlyOperation.operatingRecordId == item.recordId {
-                                ProgressView()
-                                    .padding(.trailing, 8)
-                            }
-                            WalletItemRow(item: item)
-                        }
-                    }
-                    .foregroundStyle(.primary)
-                    .disabled(isOperating)
-                }
-
-                if case let .failed(error) = manager.cloudOnlyOperation {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        .confirmationDialog(
-            selectedWallet?.name ?? "Wallet",
-            isPresented: Binding(
-                get: { selectedWallet != nil },
-                set: { if !$0 { selectedWallet = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let item = selectedWallet, let recordId = item.recordId {
-                Button("Restore to This Device") {
-                    manager.dispatch(.restoreCloudWallet(recordId: recordId))
-                }
-                Button("Delete from iCloud", role: .destructive) {
-                    walletToDelete = item
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert(
-            "Delete \(walletToDelete?.name ?? "wallet")?",
-            isPresented: Binding(
-                get: { walletToDelete != nil },
-                set: { if !$0 { walletToDelete = nil } }
+            CloudOnlySectionContent(
+                manager: manager,
+                isOperating: isOperating,
+                onSelectWallet: { selectedWallet = $0 }
             )
-        ) {
-            if let item = walletToDelete, let recordId = item.recordId {
-                Button("Delete", role: .destructive) {
-                    manager.dispatch(.deleteCloudWallet(recordId: recordId))
+        }
+        .modifier(
+            CloudOnlyActionDialogs(
+                manager: manager,
+                selectedWallet: $selectedWallet,
+                walletToDelete: $walletToDelete
+            )
+        )
+    }
+}
+
+private struct CloudOnlySectionContent: View {
+    let manager: CloudBackupDetailManager
+    let isOperating: Bool
+    let onSelectWallet: (CloudBackupWalletItem) -> Void
+
+    var body: some View {
+        switch manager.cloudOnly {
+        case .notFetched, .loading:
+            HStack {
+                ProgressView()
+                    .padding(.trailing, 8)
+                Text("Loading...")
+            }
+            .foregroundStyle(.secondary)
+            .task {
+                manager.dispatch(.fetchCloudOnly)
+            }
+
+        case let .loaded(wallets):
+            CloudOnlyWalletRows(
+                wallets: wallets,
+                operatingRecordId: manager.cloudOnlyOperation.operatingRecordId,
+                isOperating: isOperating,
+                onSelectWallet: onSelectWallet
+            )
+
+            if case let .failed(error) = manager.cloudOnlyOperation {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+private struct CloudOnlyWalletRows: View {
+    let wallets: [CloudBackupWalletItem]
+    let operatingRecordId: String?
+    let isOperating: Bool
+    let onSelectWallet: (CloudBackupWalletItem) -> Void
+
+    var body: some View {
+        ForEach(wallets, id: \.recordId) { item in
+            Button {
+                onSelectWallet(item)
+            } label: {
+                HStack {
+                    if operatingRecordId == item.recordId {
+                        ProgressView()
+                            .padding(.trailing, 8)
+                    }
+                    WalletItemRow(item: item)
                 }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This wallet backup will be permanently removed from iCloud")
+            .foregroundStyle(.primary)
+            .disabled(isOperating)
         }
+    }
+}
+
+private struct CloudOnlyActionDialogs: ViewModifier {
+    let manager: CloudBackupDetailManager
+    @Binding var selectedWallet: CloudBackupWalletItem?
+    @Binding var walletToDelete: CloudBackupWalletItem?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                selectedWallet?.name ?? "Wallet",
+                isPresented: Binding(
+                    get: { selectedWallet != nil },
+                    set: { if !$0 { selectedWallet = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let item = selectedWallet {
+                    Button("Restore to This Device") {
+                        manager.dispatch(.restoreCloudWallet(recordId: item.recordId))
+                    }
+                    Button("Delete from iCloud", role: .destructive) {
+                        walletToDelete = item
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert(
+                "Delete \(walletToDelete?.name ?? "wallet")?",
+                isPresented: Binding(
+                    get: { walletToDelete != nil },
+                    set: { if !$0 { walletToDelete = nil } }
+                )
+            ) {
+                if let item = walletToDelete {
+                    Button("Delete", role: .destructive) {
+                        manager.dispatch(.deleteCloudWallet(recordId: item.recordId))
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This wallet backup will be permanently removed from iCloud")
+            }
     }
 }
 
@@ -198,18 +245,18 @@ struct WalletSections: View {
     let wallets: [CloudBackupWalletItem]
     var showNotBackedUpBadge = false
 
-    private var groupedWallets: [(key: GroupKey, items: [CloudBackupWalletItem])] {
-        Dictionary(grouping: wallets) {
-            GroupKey(network: $0.network, walletMode: $0.walletMode)
-        }
-        .map { ($0.key, $0.value) }
-        .sorted { $0.key < $1.key }
+    private let groupedWallets: GroupedWalletSections
+
+    init(wallets: [CloudBackupWalletItem], showNotBackedUpBadge: Bool = false) {
+        self.wallets = wallets
+        self.showNotBackedUpBadge = showNotBackedUpBadge
+        groupedWallets = GroupedWalletSections(wallets: wallets)
     }
 
     var body: some View {
-        ForEach(groupedWallets, id: \.key) { group in
+        ForEach(groupedWallets.sections) { group in
             Section(header: sectionHeader(for: group.key)) {
-                ForEach(group.items, id: \.name) { item in
+                ForEach(group.items, id: \.recordId) { item in
                     WalletItemRow(item: item)
                 }
             }
@@ -232,6 +279,29 @@ struct WalletSections: View {
         } else {
             Text(key.title)
         }
+    }
+}
+
+private struct GroupedWalletSections {
+    struct Section: Identifiable {
+        let key: GroupKey
+        let items: [CloudBackupWalletItem]
+
+        var id: GroupKey {
+            key
+        }
+    }
+
+    let sections: [Section]
+
+    init(wallets: [CloudBackupWalletItem]) {
+        sections = Dictionary(grouping: wallets) {
+            GroupKey(network: $0.network, walletMode: $0.walletMode)
+        }
+        .map { key, items in
+            Section(key: key, items: items)
+        }
+        .sorted { $0.key < $1.key }
     }
 }
 
