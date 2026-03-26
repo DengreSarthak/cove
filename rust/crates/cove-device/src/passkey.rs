@@ -22,6 +22,13 @@ pub enum PasskeyError {
     NoCredentialFound,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PasskeyCredentialPresence {
+    Present,
+    Missing,
+    Indeterminate,
+}
+
 /// Result from discovering a synced passkey during restore
 #[derive(Debug, uniffi::Record)]
 pub struct DiscoveredPasskeyResult {
@@ -67,9 +74,13 @@ pub trait PasskeyProvider: Send + Sync + std::fmt::Debug + 'static {
     /// Non-interactive check whether a passkey credential exists on the device
     ///
     /// Uses preferImmediatelyAvailableCredentials to silently detect absence
-    /// (returns false with no UI). If the passkey exists, cancels before Face ID
-    /// appears and returns true
-    fn check_passkey_exists(&self, rp_id: String, credential_id: Vec<u8>) -> bool;
+    /// without showing UI. Returns an indeterminate result when iOS fails or
+    /// does not respond clearly enough to prove presence or absence
+    fn check_passkey_presence(
+        &self,
+        rp_id: String,
+        credential_id: Vec<u8>,
+    ) -> PasskeyCredentialPresence;
 }
 
 static REF: OnceCell<PasskeyAccess> = OnceCell::new();
@@ -132,7 +143,11 @@ impl PasskeyAccess {
         self.0.discover_and_authenticate_with_prf(rp_id, prf_salt, challenge)
     }
 
-    pub fn check_passkey_exists(&self, rp_id: String, credential_id: Vec<u8>) -> bool {
-        self.0.check_passkey_exists(rp_id, credential_id)
+    pub fn check_passkey_presence(
+        &self,
+        rp_id: String,
+        credential_id: Vec<u8>,
+    ) -> PasskeyCredentialPresence {
+        self.0.check_passkey_presence(rp_id, credential_id)
     }
 }

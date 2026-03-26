@@ -232,6 +232,12 @@ impl Keychain {
         ])
     }
 
+    /// Clears persisted CSPP passkey credentials without touching namespace state
+    pub fn clear_cspp_passkey(&self) {
+        self.0.delete(CSPP_CREDENTIAL_ID_KEY.into());
+        self.0.delete(CSPP_PRF_SALT_KEY.into());
+    }
+
     /// Saves a wallet's mnemonic seed encrypted in the keychain
     ///
     /// The mnemonic is encrypted with a random [`Cryptor`] before storage. The
@@ -731,5 +737,20 @@ mod tests {
         assert_eq!(kc.0.get(CSPP_CREDENTIAL_ID_KEY.into()).as_deref(), Some("old_credential"));
         assert_eq!(kc.0.get(CSPP_PRF_SALT_KEY.into()).as_deref(), Some("old_salt"));
         assert_eq!(kc.0.get(CSPP_NAMESPACE_ID_KEY.into()).as_deref(), Some("old_namespace"));
+    }
+
+    #[test]
+    fn clear_cspp_passkey_removes_credential_and_salt_only() {
+        let kc = make_keychain(MockKeychain::with_entries(vec![
+            (CSPP_CREDENTIAL_ID_KEY, "credential"),
+            (CSPP_PRF_SALT_KEY, "salt"),
+            (CSPP_NAMESPACE_ID_KEY, "namespace"),
+        ]));
+
+        kc.clear_cspp_passkey();
+
+        assert!(kc.0.get(CSPP_CREDENTIAL_ID_KEY.into()).is_none());
+        assert!(kc.0.get(CSPP_PRF_SALT_KEY.into()).is_none());
+        assert_eq!(kc.0.get(CSPP_NAMESPACE_ID_KEY.into()).as_deref(), Some("namespace"));
     }
 }
