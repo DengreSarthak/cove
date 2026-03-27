@@ -10,7 +10,7 @@ use cove_util::ResultExt as _;
 use tracing::{error, info};
 
 use self::queue_processor::PendingUploadVerifier;
-use super::{CLOUD_BACKUP_MANAGER, CloudBackupError, Message, RustCloudBackupManager};
+use super::{CLOUD_BACKUP_MANAGER, CloudBackupError, RustCloudBackupManager};
 use crate::database::Database;
 use crate::database::cloud_backup::{CloudUploadKind, PendingCloudUploadItem};
 
@@ -93,7 +93,7 @@ impl RustCloudBackupManager {
             .set(&pending)
             .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
 
-        self.send(Message::PendingUploadVerificationChanged { pending: true });
+        self.set_pending_upload_verification(true);
         self.wake_pending_upload_verifier();
         self.start_pending_upload_verification_loop();
 
@@ -128,7 +128,7 @@ impl RustCloudBackupManager {
             table
                 .delete()
                 .map_err_prefix("clear pending cloud upload queue", CloudBackupError::Internal)?;
-            self.send(Message::PendingUploadVerificationChanged { pending: false });
+            self.set_pending_upload_verification(false);
             self.wake_pending_upload_verifier();
             return Ok(());
         }
@@ -136,7 +136,7 @@ impl RustCloudBackupManager {
         table
             .set(&pending)
             .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
-        self.send(Message::PendingUploadVerificationChanged { pending: true });
+        self.set_pending_upload_verification(true);
         self.wake_pending_upload_verifier();
 
         Ok(())

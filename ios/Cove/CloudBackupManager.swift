@@ -11,6 +11,7 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
     private static let passkeySheetDismissDelay: TimeInterval = 0.8
     private static let staleVerificationThreshold: TimeInterval = 60 * 60 * 24 * 30
 
+    typealias Action = CloudBackupManagerAction
     typealias Message = CloudBackupReconcileMessage
 
     @ObservationIgnored let rust: RustCloudBackupManager
@@ -18,63 +19,55 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         label: "cove.CloudBackupManager.rustbridge", qos: .userInitiated
     )
 
-    private var revision: UInt64 = 0
+    var state: CloudBackupState
     var showExistingBackupWarning = false
     var showPasskeyChoiceDialog = false
 
     private init() {
         let rust = RustCloudBackupManager()
         self.rust = rust
+        self.state = rust.state()
         rust.listenForUpdates(reconciler: WeakReconciler(self))
     }
 
-    private var currentState: CloudBackupState {
-        _ = revision
-        return rust.state()
-    }
-
-    var state: CloudBackupState {
-        currentState
-    }
-
     var status: CloudBackupStatus {
-        currentState.status
+        state.status
     }
 
     var progress: (completed: UInt32, total: UInt32)? {
-        currentState.progress.map { ($0.completed, $0.total) }
+        state.progress.map { ($0.completed, $0.total) }
     }
 
     var restoreProgress: CloudBackupRestoreProgress? {
-        currentState.restoreProgress
+        state.restoreProgress
     }
 
     var restoreReport: CloudBackupRestoreReport? {
-        currentState.restoreReport
+        state.restoreReport
     }
 
     var syncError: String? {
-        currentState.syncError
+        state.syncError
     }
 
     var hasPendingUploadVerification: Bool {
-        currentState.hasPendingUploadVerification
+        state.hasPendingUploadVerification
     }
 
     var shouldPromptVerification: Bool {
-        currentState.shouldPromptVerification
+        state.shouldPromptVerification
     }
 
     var isUnverified: Bool {
-        currentState.isUnverified
+        state.isUnverified
     }
 
     var isConfigured: Bool {
-        currentState.isConfigured
+        state.isConfigured
     }
 
     var lastVerifiedAt: Date? {
-        currentState.lastVerifiedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        state.lastVerifiedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
     }
 
     var isVerificationStale: Bool {
@@ -84,109 +77,69 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
     }
 
     var detail: CloudBackupDetail? {
-        currentState.detail
+        state.detail
     }
 
     var verification: VerificationState {
-        currentState.verification
+        state.verification
     }
 
     var sync: SyncState {
-        currentState.sync
+        state.sync
     }
 
     var recovery: RecoveryState {
-        currentState.recovery
+        state.recovery
     }
 
     var cloudOnly: CloudOnlyState {
-        currentState.cloudOnly
+        state.cloudOnly
     }
 
     var cloudOnlyOperation: CloudOnlyOperation {
-        currentState.cloudOnlyOperation
+        state.cloudOnlyOperation
     }
 
-    func enableCloudBackup() {
-        rustBridge.async { self.rust.enableCloudBackup() }
+    func dispatch(action: Action) {
+        dispatch(action)
     }
 
-    func enableCloudBackupForceNew() {
-        rustBridge.async { self.rust.enableCloudBackupForceNew() }
-    }
-
-    func enableCloudBackupNoDiscovery() {
-        rustBridge.async { self.rust.enableCloudBackupNoDiscovery() }
-    }
-
-    func discardPendingEnableCloudBackup() {
-        rustBridge.async { self.rust.discardPendingEnableCloudBackup() }
-    }
-
-    func startVerification() {
-        rustBridge.async { self.rust.startVerification() }
-    }
-
-    func startVerificationDiscoverable() {
-        rustBridge.async { self.rust.startVerificationDiscoverable() }
-    }
-
-    func dismissVerificationPrompt() {
-        rustBridge.async { self.rust.dismissVerificationPrompt() }
-    }
-
-    func recreateManifest() {
-        rustBridge.async { self.rust.recreateManifest() }
-    }
-
-    func reinitializeBackup() {
-        rustBridge.async { self.rust.reinitializeBackup() }
-    }
-
-    func repairPasskey() {
-        rustBridge.async { self.rust.repairPasskey() }
-    }
-
-    func repairPasskeyNoDiscovery() {
-        rustBridge.async { self.rust.repairPasskeyNoDiscovery() }
-    }
-
-    func syncUnsynced() {
-        rustBridge.async { self.rust.syncUnsynced() }
-    }
-
-    func fetchCloudOnly() {
-        rustBridge.async { self.rust.fetchCloudOnly() }
-    }
-
-    func restoreCloudWallet(recordId: String) {
-        rustBridge.async { self.rust.restoreCloudWallet(recordId: recordId) }
-    }
-
-    func restoreFromCloudBackup() {
-        rustBridge.async { self.rust.restoreFromCloudBackup() }
-    }
-
-    func deleteCloudWallet(recordId: String) {
-        rustBridge.async { self.rust.deleteCloudWallet(recordId: recordId) }
-    }
-
-    func refreshDetail() {
-        rustBridge.async { self.rust.refreshDetail() }
+    func dispatch(_ action: Action) {
+        rustBridge.async { self.rust.dispatch(action: action) }
     }
 
     private func apply(_ message: Message) {
         switch message {
-        case .updated,
-             .statusChanged,
-             .verificationPromptChanged,
-             .progressUpdated,
-             .restoreProgressUpdated,
-             .enableComplete,
-             .restoreComplete,
-             .syncFailed,
-             .pendingUploadVerificationChanged:
-            revision &+= 1
+        case let .statusChanged(status):
+            state.status = status
+        case let .progressChanged(progress):
+            state.progress = progress
+        case let .restoreProgressChanged(progress):
+            state.restoreProgress = progress
+        case let .restoreReportChanged(report):
+            state.restoreReport = report
+        case let .syncErrorChanged(syncError):
+            state.syncError = syncError
+        case let .verificationPromptChanged(pending):
+            state.shouldPromptVerification = pending
+        case let .verificationMetadataChanged(isUnverified, isConfigured, lastVerifiedAt):
+            state.isUnverified = isUnverified
+            state.isConfigured = isConfigured
+            state.lastVerifiedAt = lastVerifiedAt
+        case let .pendingUploadVerificationChanged(pending):
+            state.hasPendingUploadVerification = pending
+        case let .detailChanged(detail):
+            state.detail = detail
+        case let .verificationChanged(verification):
+            state.verification = verification
+        case let .syncChanged(sync):
+            state.sync = sync
+        case let .recoveryChanged(recovery):
+            state.recovery = recovery
+        case let .cloudOnlyChanged(cloudOnly):
+            state.cloudOnly = cloudOnly
+        case let .cloudOnlyOperationChanged(cloudOnlyOperation):
+            state.cloudOnlyOperation = cloudOnlyOperation
         case .existingBackupFound:
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.passkeySheetDismissDelay) {
                 [weak self] in

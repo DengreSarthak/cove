@@ -358,7 +358,7 @@ struct MainSettingsScreen: View {
                     }
 
                     SettingsRow(title: "Retry", symbol: "arrow.clockwise") {
-                        manager.enableCloudBackup()
+                        manager.dispatch(action: .enableCloudBackup)
                     }
                 }
             }
@@ -368,7 +368,7 @@ struct MainSettingsScreen: View {
             ) {
                 Button("Create New Backup", role: .destructive) {
                     didConfirmExistingBackupWarning = true
-                    manager.enableCloudBackupForceNew()
+                    manager.dispatch(action: .enableCloudBackupForceNew)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -378,7 +378,7 @@ struct MainSettingsScreen: View {
                 guard oldValue, !newValue else { return }
 
                 if !didConfirmExistingBackupWarning {
-                    manager.discardPendingEnableCloudBackup()
+                    manager.dispatch(action: .discardPendingEnableCloudBackup)
                 }
 
                 didConfirmExistingBackupWarning = false
@@ -388,10 +388,10 @@ struct MainSettingsScreen: View {
                 isPresented: $manager.showPasskeyChoiceDialog
             ) {
                 Button("Use Existing Passkey") {
-                    manager.enableCloudBackup()
+                    manager.dispatch(action: .enableCloudBackup)
                 }
                 Button("Create New Passkey") {
-                    manager.enableCloudBackupNoDiscovery()
+                    manager.dispatch(action: .enableCloudBackupNoDiscovery)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -875,7 +875,7 @@ struct MainSettingsScreen: View {
             CloudBackupEnableOnboardingView(
                 onEnable: {
                     sheetState = .none
-                    CloudBackupManager.shared.enableCloudBackupNoDiscovery()
+                    CloudBackupManager.shared.dispatch(action: .enableCloudBackupNoDiscovery)
                 },
                 onCancel: { sheetState = .none }
             )

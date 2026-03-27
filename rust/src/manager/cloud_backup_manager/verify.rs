@@ -233,13 +233,11 @@ impl RustCloudBackupManager {
             cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
 
         persist_enabled_cloud_backup_state(&Database::global(), wallet_record_ids.len() as u32)?;
-        self.send(super::CloudBackupReconcileMessage::StatusChanged(CloudBackupStatus::Enabled));
+        self.set_status(CloudBackupStatus::Enabled);
 
         match self.refresh_cloud_backup_detail() {
             Some(CloudBackupDetailResult::Success(detail)) => {
-                self.update_state(|state| {
-                    state.detail = Some(detail);
-                });
+                self.set_detail(Some(detail));
             }
             Some(CloudBackupDetailResult::AccessError(error)) => {
                 warn!("Failed to refresh detail after passkey repair: {error}");

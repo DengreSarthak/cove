@@ -5,8 +5,8 @@ use tracing::info;
 
 use super::super::cloud_inventory::CloudWalletInventory;
 use super::super::{
-    CLOUD_BACKUP_MANAGER, CloudBackupDetail, CloudBackupDetailResult, CloudBackupReconcileMessage,
-    CloudBackupStatus, RustCloudBackupManager,
+    CLOUD_BACKUP_MANAGER, CloudBackupDetail, CloudBackupDetailResult, CloudBackupStatus,
+    RustCloudBackupManager,
 };
 use crate::database::Database;
 use crate::database::cloud_backup::CloudUploadKind;
@@ -81,9 +81,7 @@ pub(crate) fn cleanup_confirmed_pending_blobs(listed_ids: &HashSet<String>) {
     if queue.items.len() < before {
         if queue.items.is_empty() {
             let _ = table.delete();
-            CLOUD_BACKUP_MANAGER.send(
-                CloudBackupReconcileMessage::PendingUploadVerificationChanged { pending: false },
-            );
+            CLOUD_BACKUP_MANAGER.set_pending_upload_verification(false);
         } else {
             let _ = table.set(&queue);
         }

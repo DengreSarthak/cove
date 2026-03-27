@@ -75,7 +75,7 @@ struct MissingPasskeyContent: View {
 
         Section {
             Button {
-                manager.repairPasskeyNoDiscovery()
+                manager.dispatch(action: .repairPasskeyNoDiscovery)
             } label: {
                 if isRepairing {
                     HStack {
@@ -220,7 +220,7 @@ private struct CloudOnlySectionContent: View {
             }
             .foregroundStyle(.secondary)
             .task {
-                manager.fetchCloudOnly()
+                manager.dispatch(action: .fetchCloudOnly)
             }
 
         case let .loaded(wallets):
@@ -282,7 +282,7 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             ) {
                 if let item = selectedWallet {
                     Button("Restore to This Device") {
-                        manager.restoreCloudWallet(recordId: item.recordId)
+                        manager.dispatch(action: .restoreCloudWallet(recordId: item.recordId))
                     }
                     Button("Delete from iCloud", role: .destructive) {
                         walletToDelete = item
@@ -299,7 +299,7 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             ) {
                 if let item = walletToDelete {
                     Button("Delete", role: .destructive) {
-                        manager.deleteCloudWallet(recordId: item.recordId)
+                        manager.dispatch(action: .deleteCloudWallet(recordId: item.recordId))
                     }
                 }
                 Button("Cancel", role: .cancel) {}

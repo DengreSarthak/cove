@@ -1,7 +1,7 @@
 use cove_device::cloud_storage::CloudStorage;
 use tracing::{error, info, warn};
 
-use super::super::{Message, RustCloudBackupManager};
+use super::super::RustCloudBackupManager;
 use crate::database::Database;
 use crate::database::cloud_backup::{
     CloudUploadKind, CloudUploadQueueTable, PendingCloudUploadItem, PendingCloudUploadQueue,
@@ -155,7 +155,7 @@ impl PendingUploadVerifier<'_> {
     }
 
     fn send_pending_state(&self, pending: bool) {
-        self.0.send(Message::PendingUploadVerificationChanged { pending });
+        self.0.set_pending_upload_verification(pending);
     }
 }
 

@@ -46,7 +46,7 @@ struct VerificationSection: View {
                     .foregroundStyle(.secondary)
 
                 Button {
-                    manager.startVerification()
+                    manager.dispatch(action: .startVerification)
                 } label: {
                     Label("Verify Now", systemImage: "checkmark.shield")
                 }
@@ -81,7 +81,7 @@ struct VerificationSection: View {
                 .foregroundStyle(.secondary)
 
             Button {
-                manager.startVerification()
+                manager.dispatch(action: .startVerification)
             } label: {
                 Label("Run Full Verification", systemImage: "checkmark.shield")
             }
@@ -104,7 +104,7 @@ struct VerificationSection: View {
             .foregroundStyle(.secondary)
 
             Button {
-                manager.startVerification()
+                manager.dispatch(action: .startVerification)
             } label: {
                 Label("Verify Now", systemImage: "checkmark.shield")
             }
@@ -273,7 +273,7 @@ struct VerificationSection: View {
             }
 
             Button {
-                manager.startVerification()
+                manager.dispatch(action: .startVerification)
             } label: {
                 Label("Verify Again", systemImage: "checkmark.shield")
             }
@@ -284,7 +284,7 @@ struct VerificationSection: View {
     private var syncButton: some View {
         Group {
             Button {
-                manager.syncUnsynced()
+                manager.dispatch(action: .syncUnsynced)
             } label: {
                 HStack {
                     if case .syncing = manager.sync {
@@ -309,7 +309,7 @@ struct VerificationSection: View {
 
     private var retryButton: some View {
         Button {
-            manager.startVerification()
+            manager.dispatch(action: .startVerification)
         } label: {
             Label("Try Again", systemImage: "arrow.clockwise")
         }
@@ -318,7 +318,7 @@ struct VerificationSection: View {
 
     private var repairPasskeyButton: some View {
         Button {
-            manager.repairPasskey()
+            manager.dispatch(action: .repairPasskey)
         } label: {
             if manager.recovery.isRecovering {
                 HStack {

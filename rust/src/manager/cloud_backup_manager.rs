@@ -48,16 +48,50 @@ pub enum CloudBackupStatus {
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
+pub enum CloudBackupManagerAction {
+    EnableCloudBackup,
+    EnableCloudBackupForceNew,
+    EnableCloudBackupNoDiscovery,
+    DiscardPendingEnableCloudBackup,
+    RestoreFromCloudBackup,
+    StartVerification,
+    StartVerificationDiscoverable,
+    DismissVerificationPrompt,
+    RecreateManifest,
+    ReinitializeBackup,
+    RepairPasskey,
+    RepairPasskeyNoDiscovery,
+    SyncUnsynced,
+    FetchCloudOnly,
+    RestoreCloudWallet { record_id: String },
+    DeleteCloudWallet { record_id: String },
+    RefreshDetail,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
 pub enum CloudBackupReconcileMessage {
-    Updated,
     StatusChanged(CloudBackupStatus),
-    VerificationPromptChanged { pending: bool },
-    ProgressUpdated { completed: u32, total: u32 },
-    RestoreProgressUpdated(CloudBackupRestoreProgress),
-    EnableComplete,
-    RestoreComplete(CloudBackupRestoreReport),
-    SyncFailed(String),
-    PendingUploadVerificationChanged { pending: bool },
+    ProgressChanged(Option<CloudBackupProgress>),
+    RestoreProgressChanged(Option<CloudBackupRestoreProgress>),
+    RestoreReportChanged(Option<CloudBackupRestoreReport>),
+    SyncErrorChanged(Option<String>),
+    VerificationPromptChanged {
+        pending: bool,
+    },
+    VerificationMetadataChanged {
+        is_unverified: bool,
+        is_configured: bool,
+        last_verified_at: Option<u64>,
+    },
+    PendingUploadVerificationChanged {
+        pending: bool,
+    },
+    DetailChanged(Option<CloudBackupDetail>),
+    VerificationChanged(VerificationState),
+    SyncChanged(SyncState),
+    RecoveryChanged(RecoveryState),
+    CloudOnlyChanged(CloudOnlyState),
+    CloudOnlyOperationChanged(CloudOnlyOperation),
     ExistingBackupFound,
     PasskeyDiscoveryCancelled,
 }
@@ -114,7 +148,7 @@ pub enum CloudBackupDetailResult {
     AccessError(String),
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CloudBackupDetail {
     pub last_sync: Option<u64>,
     pub backed_up: Vec<CloudBackupWalletItem>,
@@ -133,7 +167,7 @@ pub enum DeepVerificationResult {
     Failed(DeepVerificationFailure),
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DeepVerificationReport {
     /// Cloud master key PRF wrapping was repaired
     pub master_key_wrapper_repaired: bool,
@@ -149,14 +183,14 @@ pub struct DeepVerificationReport {
     pub detail: Option<CloudBackupDetail>,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DeepVerificationFailure {
     pub kind: VerificationFailureKind,
     pub message: String,
     pub detail: Option<CloudBackupDetail>,
 }
 
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum VerificationFailureKind {
     /// Transient iCloud/network/passkey error — safe to retry
     Retry,
@@ -305,75 +339,249 @@ impl RustCloudBackupManager {
         .into()
     }
 
-    fn refresh_state_flags(state: &mut CloudBackupState) {
+    fn load_persisted_flags() -> (bool, bool, Option<u64>, bool) {
         let db_state = Self::load_persisted_state();
-        state.is_unverified = db_state.is_unverified();
-        state.is_configured = db_state.is_configured();
-        state.last_verified_at = db_state.last_verified_at;
-        state.should_prompt_verification = db_state.should_prompt_verification();
-    }
-
-    fn apply_message_to_state(&self, message: &Message) {
-        let mut state = self.state.write();
-
-        match message {
-            Message::Updated => {}
-            Message::StatusChanged(status) => {
-                state.status = status.clone();
-
-                if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
-                    state.progress = None;
-                    state.restore_progress = None;
-                    state.restore_report = None;
-                } else {
-                    state.progress = None;
-                    state.restore_progress = None;
-                }
-            }
-            Message::VerificationPromptChanged { pending } => {
-                state.should_prompt_verification = *pending;
-            }
-            Message::ProgressUpdated { completed, total } => {
-                state.progress = Some(CloudBackupProgress { completed: *completed, total: *total });
-            }
-            Message::RestoreProgressUpdated(progress) => {
-                state.restore_progress = Some(progress.clone());
-            }
-            Message::EnableComplete => state.progress = None,
-            Message::RestoreComplete(report) => {
-                state.restore_report = Some(report.clone());
-                state.progress = None;
-                state.restore_progress = None;
-            }
-            Message::SyncFailed(error) => state.sync_error = Some(error.clone()),
-            Message::PendingUploadVerificationChanged { pending } => {
-                state.has_pending_upload_verification = *pending;
-            }
-            Message::ExistingBackupFound | Message::PasskeyDiscoveryCancelled => {}
-        }
-
-        Self::refresh_state_flags(&mut state);
+        (
+            db_state.is_unverified(),
+            db_state.is_configured(),
+            db_state.last_verified_at,
+            db_state.should_prompt_verification(),
+        )
     }
 
     pub(super) fn send(&self, message: Message) {
-        self.apply_message_to_state(&message);
-
         if let Err(error) = self.reconciler.send(message) {
             error!("unable to send cloud backup message: {error:?}");
         }
     }
 
-    pub(crate) fn update_state<F>(&self, update: F)
-    where
-        F: FnOnce(&mut CloudBackupState),
-    {
-        {
+    pub(super) fn set_status(&self, status: CloudBackupStatus) {
+        let changed = {
             let mut state = self.state.write();
-            update(&mut state);
-            Self::refresh_state_flags(&mut state);
+            if state.status == status {
+                false
+            } else {
+                state.status = status.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::StatusChanged(status));
+        }
+    }
+
+    pub(super) fn set_progress(&self, progress: Option<CloudBackupProgress>) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.progress == progress {
+                false
+            } else {
+                state.progress = progress;
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::ProgressChanged(progress));
+        }
+    }
+
+    pub(super) fn set_restore_progress(&self, progress: Option<CloudBackupRestoreProgress>) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.restore_progress == progress {
+                false
+            } else {
+                state.restore_progress = progress.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::RestoreProgressChanged(progress));
+        }
+    }
+
+    pub(super) fn set_restore_report(&self, report: Option<CloudBackupRestoreReport>) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.restore_report == report {
+                false
+            } else {
+                state.restore_report = report.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::RestoreReportChanged(report));
+        }
+    }
+
+    pub(super) fn set_sync_error(&self, sync_error: Option<String>) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.sync_error == sync_error {
+                false
+            } else {
+                state.sync_error = sync_error.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::SyncErrorChanged(sync_error));
+        }
+    }
+
+    pub(super) fn refresh_persisted_flags(&self) {
+        let (is_unverified, is_configured, last_verified_at, should_prompt_verification) =
+            Self::load_persisted_flags();
+
+        let (metadata_changed, prompt_changed) = {
+            let mut state = self.state.write();
+
+            let metadata_changed = state.is_unverified != is_unverified
+                || state.is_configured != is_configured
+                || state.last_verified_at != last_verified_at;
+            if metadata_changed {
+                state.is_unverified = is_unverified;
+                state.is_configured = is_configured;
+                state.last_verified_at = last_verified_at;
+            }
+
+            let prompt_changed = state.should_prompt_verification != should_prompt_verification;
+            if prompt_changed {
+                state.should_prompt_verification = should_prompt_verification;
+            }
+
+            (metadata_changed, prompt_changed)
+        };
+
+        if metadata_changed {
+            self.send(Message::VerificationMetadataChanged {
+                is_unverified,
+                is_configured,
+                last_verified_at,
+            });
         }
 
-        self.send(Message::Updated);
+        if prompt_changed {
+            self.send(Message::VerificationPromptChanged { pending: should_prompt_verification });
+        }
+    }
+
+    pub(super) fn set_pending_upload_verification(&self, pending: bool) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.has_pending_upload_verification == pending {
+                false
+            } else {
+                state.has_pending_upload_verification = pending;
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::PendingUploadVerificationChanged { pending });
+        }
+    }
+
+    pub(super) fn set_detail(&self, detail: Option<CloudBackupDetail>) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.detail == detail {
+                false
+            } else {
+                state.detail = detail.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::DetailChanged(detail));
+        }
+    }
+
+    pub(super) fn set_verification(&self, verification: VerificationState) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.verification == verification {
+                false
+            } else {
+                state.verification = verification.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::VerificationChanged(verification));
+        }
+    }
+
+    pub(super) fn set_sync(&self, sync: SyncState) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.sync == sync {
+                false
+            } else {
+                state.sync = sync.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::SyncChanged(sync));
+        }
+    }
+
+    pub(super) fn set_recovery(&self, recovery: RecoveryState) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.recovery == recovery {
+                false
+            } else {
+                state.recovery = recovery.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::RecoveryChanged(recovery));
+        }
+    }
+
+    pub(super) fn set_cloud_only(&self, cloud_only: CloudOnlyState) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.cloud_only == cloud_only {
+                false
+            } else {
+                state.cloud_only = cloud_only.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::CloudOnlyChanged(cloud_only));
+        }
+    }
+
+    pub(super) fn set_cloud_only_operation(&self, cloud_only_operation: CloudOnlyOperation) {
+        let changed = {
+            let mut state = self.state.write();
+            if state.cloud_only_operation == cloud_only_operation {
+                false
+            } else {
+                state.cloud_only_operation = cloud_only_operation.clone();
+                true
+            }
+        };
+
+        if changed {
+            self.send(Message::CloudOnlyOperationChanged(cloud_only_operation));
+        }
     }
 
     pub(crate) fn persist_cloud_backup_state(
@@ -386,10 +594,8 @@ impl RustCloudBackupManager {
             .set(state)
             .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
 
-        self.send(Message::StatusChanged(Self::runtime_status_for(state)));
-        self.send(Message::VerificationPromptChanged {
-            pending: state.should_prompt_verification(),
-        });
+        self.set_status(Self::runtime_status_for(state));
+        self.refresh_persisted_flags();
 
         Ok(())
     }
@@ -444,12 +650,19 @@ impl RustCloudBackupManager {
         let operation_name = operation_name.to_owned();
         cove_tokio::task::spawn_blocking(move || {
             if let Some(status) = entering_status {
-                self.send(Message::StatusChanged(status));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
+                    self.set_restore_report(None);
+                }
+                self.set_status(status);
             }
 
             if let Err(error) = work(self.clone()) {
                 error!("{operation_name} failed: {error}");
-                self.send(Message::StatusChanged(CloudBackupStatus::Error(error.to_string())));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                self.set_status(CloudBackupStatus::Error(error.to_string()));
             }
         });
     }
@@ -478,7 +691,12 @@ impl RustCloudBackupManager {
 
     pub fn state(&self) -> CloudBackupState {
         let mut state = self.state.read().clone();
-        Self::refresh_state_flags(&mut state);
+        let (is_unverified, is_configured, last_verified_at, should_prompt_verification) =
+            Self::load_persisted_flags();
+        state.is_unverified = is_unverified;
+        state.is_configured = is_configured;
+        state.last_verified_at = last_verified_at;
+        state.should_prompt_verification = should_prompt_verification;
         state.has_pending_upload_verification = self.has_pending_cloud_upload_verification();
         state
     }
@@ -505,18 +723,9 @@ impl RustCloudBackupManager {
     /// even before the reconciler has delivered its first message
     pub fn sync_persisted_state(&self) {
         let db_state = Self::load_persisted_state();
-        let mut state = self.state.write();
-
-        if matches!(state.status, CloudBackupStatus::Disabled) {
-            let new_status = Self::runtime_status_for(&db_state);
-
-            if state.status != new_status {
-                state.status = new_status.clone();
-                Self::refresh_state_flags(&mut state);
-                drop(state);
-                self.send(Message::StatusChanged(new_status));
-            }
-        }
+        self.set_status(Self::runtime_status_for(&db_state));
+        self.refresh_persisted_flags();
+        self.set_pending_upload_verification(self.has_pending_cloud_upload_verification());
     }
 
     /// Check if cloud backup is enabled, used as nav guard
@@ -566,72 +775,25 @@ impl RustCloudBackupManager {
         let _ = db.cloud_backup_state.delete();
         let _ = db.cloud_upload_queue.delete();
 
-        self.update_state(|state| {
-            *state = CloudBackupState::default();
-        });
-        self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
-        self.send(Message::PendingUploadVerificationChanged { pending: false });
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_restore_report(None);
+        self.set_sync_error(None);
+        self.refresh_persisted_flags();
+        self.set_pending_upload_verification(false);
+        self.set_detail(None);
+        self.set_verification(VerificationState::Idle);
+        self.set_sync(SyncState::Idle);
+        self.set_recovery(RecoveryState::Idle);
+        self.set_cloud_only(CloudOnlyState::NotFetched);
+        self.set_cloud_only_operation(CloudOnlyOperation::Idle);
+        self.set_status(CloudBackupStatus::Disabled);
         info!("Debug: reset cloud backup local state (including master key)");
     }
 
     /// Background startup health check for cloud backup integrity
     pub fn verify_backup_integrity(&self) -> Option<String> {
         self.verify_backup_integrity_impl()
-    }
-
-    /// Enable cloud backup — idempotent, safe to retry
-    ///
-    /// Creates passkey, encrypts master key + all wallets, hands them off to iCloud,
-    /// then verifies full upload in the background
-    pub fn enable_cloud_backup(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup",
-            None,
-            |this| this.do_enable_cloud_backup(),
-        );
-    }
-
-    /// Enable cloud backup, skipping recovery — creates a new namespace
-    ///
-    /// Called after the user confirms they want a new backup when existing cloud
-    /// backups were found but not recovered (UserDeclined or NoMatch)
-    pub fn enable_cloud_backup_force_new(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup_force_new",
-            Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup_force_new(),
-        );
-    }
-
-    /// Enable cloud backup, skipping passkey discovery — goes straight to registration
-    ///
-    /// Called after the user cancels the passkey discovery picker and chooses
-    /// "Create New Passkey" from the options alert
-    pub fn enable_cloud_backup_no_discovery(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup_no_discovery",
-            Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup_no_discovery(),
-        );
-    }
-
-    pub fn discard_pending_enable_cloud_backup(&self) {
-        self.clear_pending_enable_session();
-    }
-
-    /// Restore from cloud backup — called after device restore
-    ///
-    /// Uses discoverable credential assertion (no local keychain state required)
-    pub fn restore_from_cloud_backup(&self) {
-        info!("restore_from_cloud_backup: spawning restore task");
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "restore_from_cloud_backup",
-            None,
-            |this| {
-                info!("restore_from_cloud_backup: task started");
-                this.do_restore_from_cloud_backup()
-            },
-        );
     }
 
     /// Back up a newly created wallet, fire-and-forget
@@ -649,10 +811,52 @@ impl RustCloudBackupManager {
                 warn!("Failed to backup new wallet, retrying full sync: {error}");
                 if let Err(error) = this.do_sync_unsynced_wallets() {
                     error!("Retry sync also failed: {error}");
-                    this.send(Message::SyncFailed(error.to_string()));
+                    this.set_sync_error(Some(error.to_string()));
                 }
             }
         });
+    }
+}
+
+impl RustCloudBackupManager {
+    pub(crate) fn enable_cloud_backup(&self) {
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup",
+            None,
+            |this| this.do_enable_cloud_backup(),
+        );
+    }
+
+    pub(crate) fn enable_cloud_backup_force_new(&self) {
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup_force_new",
+            Some(CloudBackupStatus::Enabling),
+            |this| this.do_enable_cloud_backup_force_new(),
+        );
+    }
+
+    pub(crate) fn enable_cloud_backup_no_discovery(&self) {
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup_no_discovery",
+            Some(CloudBackupStatus::Enabling),
+            |this| this.do_enable_cloud_backup_no_discovery(),
+        );
+    }
+
+    pub(crate) fn discard_pending_enable_cloud_backup(&self) {
+        self.clear_pending_enable_session();
+    }
+
+    pub(crate) fn restore_from_cloud_backup(&self) {
+        info!("restore_from_cloud_backup: spawning restore task");
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "restore_from_cloud_backup",
+            None,
+            |this| {
+                info!("restore_from_cloud_backup: task started");
+                this.do_restore_from_cloud_backup()
+            },
+        );
     }
 }
 
@@ -767,7 +971,7 @@ mod tests {
             total: Some(2),
         };
 
-        manager.apply_message_to_state(&Message::RestoreProgressUpdated(progress.clone()));
+        manager.set_restore_progress(Some(progress.clone()));
 
         assert_eq!(manager.state.read().restore_progress, Some(progress));
     }
@@ -775,15 +979,13 @@ mod tests {
     #[test]
     fn restore_complete_clears_restore_progress() {
         let manager = RustCloudBackupManager::init();
-        manager.apply_message_to_state(&Message::RestoreProgressUpdated(
-            CloudBackupRestoreProgress {
-                stage: CloudBackupRestoreStage::Restoring,
-                completed: 1,
-                total: Some(2),
-            },
-        ));
-
-        manager.apply_message_to_state(&Message::RestoreComplete(CloudBackupRestoreReport {
+        manager.set_restore_progress(Some(CloudBackupRestoreProgress {
+            stage: CloudBackupRestoreStage::Restoring,
+            completed: 1,
+            total: Some(2),
+        }));
+        manager.set_restore_progress(None);
+        manager.set_restore_report(Some(CloudBackupRestoreReport {
             wallets_restored: 1,
             wallets_failed: 0,
             failed_wallet_errors: Vec::new(),
@@ -801,17 +1003,14 @@ mod tests {
             failed_wallet_errors: vec!["download failed".into()],
         };
 
-        manager.apply_message_to_state(&Message::RestoreProgressUpdated(
-            CloudBackupRestoreProgress {
-                stage: CloudBackupRestoreStage::Restoring,
-                completed: 1,
-                total: Some(2),
-            },
-        ));
-        manager.apply_message_to_state(&Message::RestoreComplete(report.clone()));
-        manager.apply_message_to_state(&Message::StatusChanged(CloudBackupStatus::Error(
-            "all wallets failed".into(),
-        )));
+        manager.set_restore_progress(Some(CloudBackupRestoreProgress {
+            stage: CloudBackupRestoreStage::Restoring,
+            completed: 1,
+            total: Some(2),
+        }));
+        manager.set_restore_progress(None);
+        manager.set_restore_report(Some(report.clone()));
+        manager.set_status(CloudBackupStatus::Error("all wallets failed".into()));
 
         let state = manager.state.read();
         assert!(state.restore_progress.is_none());

@@ -32,11 +32,7 @@ impl RustCloudBackupManager {
         completed: u32,
         total: Option<u32>,
     ) {
-        self.send(Message::RestoreProgressUpdated(CloudBackupRestoreProgress {
-            stage,
-            completed,
-            total,
-        }));
+        self.set_restore_progress(Some(CloudBackupRestoreProgress { stage, completed, total }));
     }
 
     pub(crate) fn do_sync_unsynced_wallets(&self) -> Result<(), CloudBackupError> {
@@ -198,7 +194,10 @@ impl RustCloudBackupManager {
 
     pub(crate) fn do_enable_cloud_backup(&self) -> Result<(), CloudBackupError> {
         self.clear_pending_enable_session();
-        self.send(Message::StatusChanged(CloudBackupStatus::Enabling));
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_restore_report(None);
+        self.set_status(CloudBackupStatus::Enabling);
 
         let passkey = PasskeyAccess::global();
         if !passkey.is_prf_supported() {
@@ -241,14 +240,18 @@ impl RustCloudBackupManager {
             NamespaceMatchOutcome::UserDeclined => {
                 info!("Enable: user cancelled passkey picker during namespace matching");
                 self.send(Message::PasskeyDiscoveryCancelled);
-                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                self.set_status(CloudBackupStatus::Disabled);
                 Ok(())
             }
 
             NamespaceMatchOutcome::NoMatch => {
                 info!("Enable: passkey didn't match existing backups, asking user to confirm");
                 self.send(Message::ExistingBackupFound);
-                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                self.set_status(CloudBackupStatus::Disabled);
                 Ok(())
             }
 
@@ -301,8 +304,9 @@ impl RustCloudBackupManager {
         persist_enabled_cloud_backup_state_reset_verification(&db, wallet_count)?;
         self.enqueue_pending_uploads(&matched.namespace_id, uploaded_wallet_record_ids)?;
 
-        self.send(Message::EnableComplete);
-        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_status(CloudBackupStatus::Enabled);
         info!("Cloud backup enabled (recovered existing namespace)");
         Ok(())
     }
@@ -329,7 +333,9 @@ impl RustCloudBackupManager {
             Ok(result) => result,
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
                 self.send(Message::PasskeyDiscoveryCancelled);
-                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                self.set_status(CloudBackupStatus::Disabled);
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -385,7 +391,9 @@ impl RustCloudBackupManager {
             Ok(result) => result,
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
                 self.send(Message::PasskeyDiscoveryCancelled);
-                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+                self.set_progress(None);
+                self.set_restore_progress(None);
+                self.set_status(CloudBackupStatus::Disabled);
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -398,7 +406,9 @@ impl RustCloudBackupManager {
             );
             self.replace_pending_enable_session(PendingEnableSession::new(master_key, passkey));
             self.send(Message::ExistingBackupFound);
-            self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+            self.set_progress(None);
+            self.set_restore_progress(None);
+            self.set_status(CloudBackupStatus::Disabled);
             return Ok(());
         }
 
@@ -411,7 +421,10 @@ impl RustCloudBackupManager {
     }
 
     pub(super) fn do_restore_from_cloud_backup(&self) -> Result<(), CloudBackupError> {
-        self.send(Message::StatusChanged(CloudBackupStatus::Restoring));
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_restore_report(None);
+        self.set_status(CloudBackupStatus::Restoring);
         self.send_restore_progress(CloudBackupRestoreStage::Finding, 0, None);
 
         let cloud = CloudStorage::global();
@@ -487,7 +500,8 @@ impl RustCloudBackupManager {
         }
 
         if report.wallets_restored == 0 && report.wallets_failed > 0 {
-            self.send(Message::RestoreComplete(report));
+            self.set_restore_progress(None);
+            self.set_restore_report(Some(report));
             return Err(CloudBackupError::Internal("all wallets failed to restore".into()));
         }
 
@@ -503,8 +517,9 @@ impl RustCloudBackupManager {
         };
         self.persist_cloud_backup_state(&state, "persist restored cloud backup state")?;
 
-        self.send(Message::RestoreComplete(report));
-        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
+        self.set_restore_progress(None);
+        self.set_restore_report(Some(report));
+        self.set_status(CloudBackupStatus::Enabled);
 
         info!("Cloud backup restore complete");
         Ok(())
@@ -584,8 +599,9 @@ impl RustCloudBackupManager {
             std::iter::once(super::cspp_master_key_record_id()).chain(uploaded_wallet_record_ids),
         )?;
 
-        self.send(Message::EnableComplete);
-        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_status(CloudBackupStatus::Enabled);
         info!("Cloud backup enabled successfully");
         Ok(())
     }
@@ -633,8 +649,9 @@ impl RustCloudBackupManager {
             std::iter::once(super::cspp_master_key_record_id()).chain(uploaded_wallet_record_ids),
         )?;
 
-        self.send(Message::EnableComplete);
-        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_status(CloudBackupStatus::Enabled);
         info!("Cloud backup enabled successfully");
         Ok(())
     }

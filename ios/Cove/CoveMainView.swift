@@ -802,12 +802,12 @@ struct CoveMainView: View {
     private func dismissCloudBackupVerificationPrompt() {
         keepShowingCloudBackupVerificationPrompt = false
         showCloudBackupVerificationPrompt = false
-        CloudBackupManager.shared.dismissVerificationPrompt()
+        CloudBackupManager.shared.dispatch(action: .dismissVerificationPrompt)
     }
 
     private func startCloudBackupVerification() {
         keepShowingCloudBackupVerificationPrompt = true
-        CloudBackupManager.shared.startVerification()
+        CloudBackupManager.shared.dispatch(action: .startVerification)
     }
 
     private func handleCloudBackupVerificationChange(_ verification: VerificationState) {

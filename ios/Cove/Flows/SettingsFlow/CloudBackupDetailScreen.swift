@@ -63,11 +63,11 @@ struct CloudBackupDetailScreen: View {
             guard !isPasskeyMissing else { return }
 
             refreshSyncHealth()
-            manager.refreshDetail()
+            manager.dispatch(action: .refreshDetail)
 
             if !hasAutoVerified {
                 hasAutoVerified = true
-                manager.startVerificationDiscoverable()
+                manager.dispatch(action: .startVerificationDiscoverable)
             }
         }
         .onChange(of: manager.detail) { _, _ in
@@ -82,7 +82,7 @@ struct CloudBackupDetailScreen: View {
             titleVisibility: .visible
         ) {
             Button("Recreate", role: .destructive) {
-                manager.recreateManifest()
+                manager.dispatch(action: .recreateManifest)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -96,7 +96,7 @@ struct CloudBackupDetailScreen: View {
             titleVisibility: .visible
         ) {
             Button("Reinitialize", role: .destructive) {
-                manager.reinitializeBackup()
+                manager.dispatch(action: .reinitializeBackup)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -109,10 +109,10 @@ struct CloudBackupDetailScreen: View {
             isPresented: $manager.showPasskeyChoiceDialog
         ) {
             Button("Use Existing Passkey") {
-                manager.repairPasskey()
+                manager.dispatch(action: .repairPasskey)
             }
             Button("Create New Passkey") {
-                manager.repairPasskeyNoDiscovery()
+                manager.dispatch(action: .repairPasskeyNoDiscovery)
             }
             Button("Cancel", role: .cancel) {}
         } message: {

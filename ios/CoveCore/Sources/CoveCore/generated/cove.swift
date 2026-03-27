@@ -7043,29 +7043,7 @@ public func FfiConverterTypeRustAuthManager_lower(_ value: RustAuthManager) -> U
 
 public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
     
-    func deleteCloudWallet(recordId: String) 
-    
-    func dismissVerificationPrompt() 
-    
-    func fetchCloudOnly() 
-    
-    func recreateManifest() 
-    
-    func refreshDetail() 
-    
-    func reinitializeBackup() 
-    
-    func repairPasskey() 
-    
-    func repairPasskeyNoDiscovery() 
-    
-    func restoreCloudWallet(recordId: String) 
-    
-    func startVerification() 
-    
-    func startVerificationDiscoverable() 
-    
-    func syncUnsynced() 
+    func dispatch(action: CloudBackupManagerAction) 
     
     /**
      * Back up a newly created wallet, fire-and-forget
@@ -7088,32 +7066,6 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      */
     func debugResetCloudBackupState() 
     
-    func discardPendingEnableCloudBackup() 
-    
-    /**
-     * Enable cloud backup — idempotent, safe to retry
-     *
-     * Creates passkey, encrypts master key + all wallets, hands them off to iCloud,
-     * then verifies full upload in the background
-     */
-    func enableCloudBackup() 
-    
-    /**
-     * Enable cloud backup, skipping recovery — creates a new namespace
-     *
-     * Called after the user confirms they want a new backup when existing cloud
-     * backups were found but not recovered (UserDeclined or NoMatch)
-     */
-    func enableCloudBackupForceNew() 
-    
-    /**
-     * Enable cloud backup, skipping passkey discovery — goes straight to registration
-     *
-     * Called after the user cancels the passkey discovery picker and chooses
-     * "Create New Passkey" from the options alert
-     */
-    func enableCloudBackupNoDiscovery() 
-    
     func hasPendingCloudUploadVerification()  -> Bool
     
     /**
@@ -7132,13 +7084,6 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
     func isCloudBackupUnverified()  -> Bool
     
     func listenForUpdates(reconciler: CloudBackupManagerReconciler) 
-    
-    /**
-     * Restore from cloud backup — called after device restore
-     *
-     * Uses discoverable credential assertion (no local keychain state required)
-     */
-    func restoreFromCloudBackup() 
     
     func resumePendingCloudUploadVerification() 
     
@@ -7218,88 +7163,10 @@ public convenience init() {
     
 
     
-open func deleteCloudWallet(recordId: String)  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_delete_cloud_wallet(
+open func dispatch(action: CloudBackupManagerAction)  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_dispatch(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(recordId),$0
-    )
-}
-}
-    
-open func dismissVerificationPrompt()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_dismiss_verification_prompt(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func fetchCloudOnly()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_fetch_cloud_only(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func recreateManifest()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_recreate_manifest(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func refreshDetail()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_refresh_detail(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func reinitializeBackup()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_reinitialize_backup(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func repairPasskey()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_repair_passkey(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func repairPasskeyNoDiscovery()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_repair_passkey_no_discovery(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func restoreCloudWallet(recordId: String)  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_restore_cloud_wallet(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(recordId),$0
-    )
-}
-}
-    
-open func startVerification()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_start_verification(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func startVerificationDiscoverable()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_start_verification_discoverable(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func syncUnsynced()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_sync_unsynced(
-            self.uniffiCloneHandle(),$0
+        FfiConverterTypeCloudBackupManagerAction_lower(action),$0
     )
 }
 }
@@ -7343,52 +7210,6 @@ open func currentStatus() -> CloudBackupStatus  {
      */
 open func debugResetCloudBackupState()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_debug_reset_cloud_backup_state(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-open func discardPendingEnableCloudBackup()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_discard_pending_enable_cloud_backup(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
-     * Enable cloud backup — idempotent, safe to retry
-     *
-     * Creates passkey, encrypts master key + all wallets, hands them off to iCloud,
-     * then verifies full upload in the background
-     */
-open func enableCloudBackup()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_enable_cloud_backup(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
-     * Enable cloud backup, skipping recovery — creates a new namespace
-     *
-     * Called after the user confirms they want a new backup when existing cloud
-     * backups were found but not recovered (UserDeclined or NoMatch)
-     */
-open func enableCloudBackupForceNew()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_enable_cloud_backup_force_new(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
-     * Enable cloud backup, skipping passkey discovery — goes straight to registration
-     *
-     * Called after the user cancels the passkey discovery picker and chooses
-     * "Create New Passkey" from the options alert
-     */
-open func enableCloudBackupNoDiscovery()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_enable_cloud_backup_no_discovery(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -7439,18 +7260,6 @@ open func listenForUpdates(reconciler: CloudBackupManagerReconciler)  {try! rust
     uniffi_cove_fn_method_rustcloudbackupmanager_listen_for_updates(
             self.uniffiCloneHandle(),
         FfiConverterCallbackInterfaceCloudBackupManagerReconciler_lower(reconciler),$0
-    )
-}
-}
-    
-    /**
-     * Restore from cloud backup — called after device restore
-     *
-     * Uses discoverable credential assertion (no local keychain state required)
-     */
-open func restoreFromCloudBackup()  {try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_restore_from_cloud_backup(
-            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -18069,23 +17878,212 @@ public func FfiConverterTypeCloudBackupDetailResult_lower(_ value: CloudBackupDe
 
 
 
+public enum CloudBackupManagerAction: Equatable, Hashable {
+    
+    case enableCloudBackup
+    case enableCloudBackupForceNew
+    case enableCloudBackupNoDiscovery
+    case discardPendingEnableCloudBackup
+    case restoreFromCloudBackup
+    case startVerification
+    case startVerificationDiscoverable
+    case dismissVerificationPrompt
+    case recreateManifest
+    case reinitializeBackup
+    case repairPasskey
+    case repairPasskeyNoDiscovery
+    case syncUnsynced
+    case fetchCloudOnly
+    case restoreCloudWallet(recordId: String
+    )
+    case deleteCloudWallet(recordId: String
+    )
+    case refreshDetail
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudBackupManagerAction: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupManagerAction: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupManagerAction
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupManagerAction {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .enableCloudBackup
+        
+        case 2: return .enableCloudBackupForceNew
+        
+        case 3: return .enableCloudBackupNoDiscovery
+        
+        case 4: return .discardPendingEnableCloudBackup
+        
+        case 5: return .restoreFromCloudBackup
+        
+        case 6: return .startVerification
+        
+        case 7: return .startVerificationDiscoverable
+        
+        case 8: return .dismissVerificationPrompt
+        
+        case 9: return .recreateManifest
+        
+        case 10: return .reinitializeBackup
+        
+        case 11: return .repairPasskey
+        
+        case 12: return .repairPasskeyNoDiscovery
+        
+        case 13: return .syncUnsynced
+        
+        case 14: return .fetchCloudOnly
+        
+        case 15: return .restoreCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 16: return .deleteCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 17: return .refreshDetail
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudBackupManagerAction, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .enableCloudBackup:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .enableCloudBackupForceNew:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .enableCloudBackupNoDiscovery:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .discardPendingEnableCloudBackup:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .restoreFromCloudBackup:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .startVerification:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .startVerificationDiscoverable:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .dismissVerificationPrompt:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .recreateManifest:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .reinitializeBackup:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .repairPasskey:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .repairPasskeyNoDiscovery:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .syncUnsynced:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .fetchCloudOnly:
+            writeInt(&buf, Int32(14))
+        
+        
+        case let .restoreCloudWallet(recordId):
+            writeInt(&buf, Int32(15))
+            FfiConverterString.write(recordId, into: &buf)
+            
+        
+        case let .deleteCloudWallet(recordId):
+            writeInt(&buf, Int32(16))
+            FfiConverterString.write(recordId, into: &buf)
+            
+        
+        case .refreshDetail:
+            writeInt(&buf, Int32(17))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupManagerAction_lift(_ buf: RustBuffer) throws -> CloudBackupManagerAction {
+    return try FfiConverterTypeCloudBackupManagerAction.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupManagerAction_lower(_ value: CloudBackupManagerAction) -> RustBuffer {
+    return FfiConverterTypeCloudBackupManagerAction.lower(value)
+}
+
+
+
+
 public enum CloudBackupReconcileMessage: Equatable, Hashable {
     
-    case updated
     case statusChanged(CloudBackupStatus
+    )
+    case progressChanged(CloudBackupProgress?
+    )
+    case restoreProgressChanged(CloudBackupRestoreProgress?
+    )
+    case restoreReportChanged(CloudBackupRestoreReport?
+    )
+    case syncErrorChanged(String?
     )
     case verificationPromptChanged(pending: Bool
     )
-    case progressUpdated(completed: UInt32, total: UInt32
-    )
-    case restoreProgressUpdated(CloudBackupRestoreProgress
-    )
-    case enableComplete
-    case restoreComplete(CloudBackupRestoreReport
-    )
-    case syncFailed(String
+    case verificationMetadataChanged(isUnverified: Bool, isConfigured: Bool, lastVerifiedAt: UInt64?
     )
     case pendingUploadVerificationChanged(pending: Bool
+    )
+    case detailChanged(CloudBackupDetail?
+    )
+    case verificationChanged(VerificationState
+    )
+    case syncChanged(SyncState
+    )
+    case recoveryChanged(RecoveryState
+    )
+    case cloudOnlyChanged(CloudOnlyState
+    )
+    case cloudOnlyOperationChanged(CloudOnlyOperation
     )
     case existingBackupFound
     case passkeyDiscoveryCancelled
@@ -18110,34 +18108,51 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .updated
-        
-        case 2: return .statusChanged(try FfiConverterTypeCloudBackupStatus.read(from: &buf)
+        case 1: return .statusChanged(try FfiConverterTypeCloudBackupStatus.read(from: &buf)
         )
         
-        case 3: return .verificationPromptChanged(pending: try FfiConverterBool.read(from: &buf)
+        case 2: return .progressChanged(try FfiConverterOptionTypeCloudBackupProgress.read(from: &buf)
         )
         
-        case 4: return .progressUpdated(completed: try FfiConverterUInt32.read(from: &buf), total: try FfiConverterUInt32.read(from: &buf)
+        case 3: return .restoreProgressChanged(try FfiConverterOptionTypeCloudBackupRestoreProgress.read(from: &buf)
         )
         
-        case 5: return .restoreProgressUpdated(try FfiConverterTypeCloudBackupRestoreProgress.read(from: &buf)
+        case 4: return .restoreReportChanged(try FfiConverterOptionTypeCloudBackupRestoreReport.read(from: &buf)
         )
         
-        case 6: return .enableComplete
-        
-        case 7: return .restoreComplete(try FfiConverterTypeCloudBackupRestoreReport.read(from: &buf)
+        case 5: return .syncErrorChanged(try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 8: return .syncFailed(try FfiConverterString.read(from: &buf)
+        case 6: return .verificationPromptChanged(pending: try FfiConverterBool.read(from: &buf)
         )
         
-        case 9: return .pendingUploadVerificationChanged(pending: try FfiConverterBool.read(from: &buf)
+        case 7: return .verificationMetadataChanged(isUnverified: try FfiConverterBool.read(from: &buf), isConfigured: try FfiConverterBool.read(from: &buf), lastVerifiedAt: try FfiConverterOptionUInt64.read(from: &buf)
         )
         
-        case 10: return .existingBackupFound
+        case 8: return .pendingUploadVerificationChanged(pending: try FfiConverterBool.read(from: &buf)
+        )
         
-        case 11: return .passkeyDiscoveryCancelled
+        case 9: return .detailChanged(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        )
+        
+        case 10: return .verificationChanged(try FfiConverterTypeVerificationState.read(from: &buf)
+        )
+        
+        case 11: return .syncChanged(try FfiConverterTypeSyncState.read(from: &buf)
+        )
+        
+        case 12: return .recoveryChanged(try FfiConverterTypeRecoveryState.read(from: &buf)
+        )
+        
+        case 13: return .cloudOnlyChanged(try FfiConverterTypeCloudOnlyState.read(from: &buf)
+        )
+        
+        case 14: return .cloudOnlyOperationChanged(try FfiConverterTypeCloudOnlyOperation.read(from: &buf)
+        )
+        
+        case 15: return .existingBackupFound
+        
+        case 16: return .passkeyDiscoveryCancelled
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -18147,56 +18162,84 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         switch value {
         
         
-        case .updated:
-            writeInt(&buf, Int32(1))
-        
-        
         case let .statusChanged(v1):
-            writeInt(&buf, Int32(2))
+            writeInt(&buf, Int32(1))
             FfiConverterTypeCloudBackupStatus.write(v1, into: &buf)
             
         
-        case let .verificationPromptChanged(pending):
+        case let .progressChanged(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterOptionTypeCloudBackupProgress.write(v1, into: &buf)
+            
+        
+        case let .restoreProgressChanged(v1):
             writeInt(&buf, Int32(3))
+            FfiConverterOptionTypeCloudBackupRestoreProgress.write(v1, into: &buf)
+            
+        
+        case let .restoreReportChanged(v1):
+            writeInt(&buf, Int32(4))
+            FfiConverterOptionTypeCloudBackupRestoreReport.write(v1, into: &buf)
+            
+        
+        case let .syncErrorChanged(v1):
+            writeInt(&buf, Int32(5))
+            FfiConverterOptionString.write(v1, into: &buf)
+            
+        
+        case let .verificationPromptChanged(pending):
+            writeInt(&buf, Int32(6))
             FfiConverterBool.write(pending, into: &buf)
             
         
-        case let .progressUpdated(completed,total):
-            writeInt(&buf, Int32(4))
-            FfiConverterUInt32.write(completed, into: &buf)
-            FfiConverterUInt32.write(total, into: &buf)
-            
-        
-        case let .restoreProgressUpdated(v1):
-            writeInt(&buf, Int32(5))
-            FfiConverterTypeCloudBackupRestoreProgress.write(v1, into: &buf)
-            
-        
-        case .enableComplete:
-            writeInt(&buf, Int32(6))
-        
-        
-        case let .restoreComplete(v1):
+        case let .verificationMetadataChanged(isUnverified,isConfigured,lastVerifiedAt):
             writeInt(&buf, Int32(7))
-            FfiConverterTypeCloudBackupRestoreReport.write(v1, into: &buf)
-            
-        
-        case let .syncFailed(v1):
-            writeInt(&buf, Int32(8))
-            FfiConverterString.write(v1, into: &buf)
+            FfiConverterBool.write(isUnverified, into: &buf)
+            FfiConverterBool.write(isConfigured, into: &buf)
+            FfiConverterOptionUInt64.write(lastVerifiedAt, into: &buf)
             
         
         case let .pendingUploadVerificationChanged(pending):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(8))
             FfiConverterBool.write(pending, into: &buf)
             
         
-        case .existingBackupFound:
+        case let .detailChanged(v1):
+            writeInt(&buf, Int32(9))
+            FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
+            
+        
+        case let .verificationChanged(v1):
             writeInt(&buf, Int32(10))
+            FfiConverterTypeVerificationState.write(v1, into: &buf)
+            
+        
+        case let .syncChanged(v1):
+            writeInt(&buf, Int32(11))
+            FfiConverterTypeSyncState.write(v1, into: &buf)
+            
+        
+        case let .recoveryChanged(v1):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeRecoveryState.write(v1, into: &buf)
+            
+        
+        case let .cloudOnlyChanged(v1):
+            writeInt(&buf, Int32(13))
+            FfiConverterTypeCloudOnlyState.write(v1, into: &buf)
+            
+        
+        case let .cloudOnlyOperationChanged(v1):
+            writeInt(&buf, Int32(14))
+            FfiConverterTypeCloudOnlyOperation.write(v1, into: &buf)
+            
+        
+        case .existingBackupFound:
+            writeInt(&buf, Int32(15))
         
         
         case .passkeyDiscoveryCancelled:
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(16))
         
         }
     }
@@ -34728,40 +34771,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_rustauthmanager_validate_security_action() != 4302) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_delete_cloud_wallet() != 46283) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_dismiss_verification_prompt() != 65522) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_fetch_cloud_only() != 25871) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_recreate_manifest() != 52937) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_refresh_detail() != 8027) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_reinitialize_backup() != 47509) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_repair_passkey() != 49195) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_repair_passkey_no_discovery() != 18659) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_restore_cloud_wallet() != 41514) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_start_verification() != 21649) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_start_verification_discoverable() != 54442) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_unsynced() != 20140) {
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_dispatch() != 54131) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_backup_new_wallet() != 25342) {
@@ -34774,18 +34784,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_debug_reset_cloud_backup_state() != 45375) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_discard_pending_enable_cloud_backup() != 42772) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup() != 63789) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup_force_new() != 50668) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup_no_discovery() != 64607) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_has_pending_cloud_upload_verification() != 4437) {
@@ -34801,9 +34799,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_listen_for_updates() != 57718) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_restore_from_cloud_backup() != 40792) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification() != 24590) {
