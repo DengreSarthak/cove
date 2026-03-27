@@ -1,5 +1,18 @@
 import SwiftUI
 
+enum OnboardingRecoveryTypography {
+    static let termsTitle = Font.largeTitle.weight(.bold)
+    static let heroTitle = Font.title.weight(.bold)
+    static let compactTitle = Font.title2.weight(.semibold)
+    static let body = Font.body
+    static let bodySemibold = Font.body.weight(.semibold)
+    static let subheadline = Font.subheadline
+    static let footnote = Font.footnote
+    static let captionSemibold = Font.caption.weight(.semibold)
+    static let primaryButton = Font.headline.weight(.semibold)
+    static let secondaryButton = Font.body.weight(.semibold)
+}
+
 struct OnboardingStepIndicator: View {
     let selected: Int
     var total: Int = 3
@@ -116,7 +129,7 @@ struct OnboardingPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 18, weight: .semibold, design: .rounded))
+            .font(OnboardingRecoveryTypography.primaryButton)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 18)
             .padding(.horizontal, 18)
@@ -140,7 +153,7 @@ struct OnboardingSecondaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .semibold, design: .rounded))
+            .font(OnboardingRecoveryTypography.secondaryButton)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 17)
             .padding(.horizontal, 18)

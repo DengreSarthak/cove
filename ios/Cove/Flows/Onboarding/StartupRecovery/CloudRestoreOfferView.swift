@@ -23,12 +23,12 @@ struct CloudRestoreOfferView: View {
 
             VStack(spacing: 16) {
                 Text("iCloud Backup Found")
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.heroTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("A previous iCloud backup was found. Restore your wallet securely using your passkey.")
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.76))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -56,7 +56,7 @@ struct CloudRestoreOfferView: View {
 
                 Button(action: onSkip) {
                     Text("Set Up as New")
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .font(OnboardingRecoveryTypography.bodySemibold)
                         .foregroundStyle(Color.btnGradientLight.opacity(0.95))
                 }
                 .buttonStyle(.plain)
@@ -108,7 +108,7 @@ struct CloudRestoreOfferView: View {
     private var passkeyCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Recommended")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .font(OnboardingRecoveryTypography.captionSemibold)
                 .foregroundStyle(Color.btnGradientLight.opacity(0.92))
                 .frame(minWidth: 76)
                 .padding(.horizontal, 10)
@@ -130,11 +130,11 @@ struct CloudRestoreOfferView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Passkey Restore")
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .font(OnboardingRecoveryTypography.bodySemibold)
                         .foregroundStyle(.white)
 
                     Text("Secured with iCloud Keychain")
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .font(OnboardingRecoveryTypography.footnote)
                         .foregroundStyle(.coveLightGray.opacity(0.58))
                 }
 
@@ -142,7 +142,7 @@ struct CloudRestoreOfferView: View {
             }
 
             Text("Your passkey is stored securely in iCloud Keychain and syncs across all your Apple devices.")
-                .font(.system(size: 17, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.subheadline)
                 .foregroundStyle(.coveLightGray.opacity(0.74))
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -166,7 +166,7 @@ struct CloudRestoreOfferView: View {
                 .padding(.top, 2)
 
             Text(message)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.footnote)
                 .foregroundStyle(.orange.opacity(0.95))
                 .fixedSize(horizontal: false, vertical: true)
         }

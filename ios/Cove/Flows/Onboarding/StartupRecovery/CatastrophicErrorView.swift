@@ -113,14 +113,14 @@ private struct CatastrophicErrorContent: View {
 
             VStack(spacing: 16) {
                 Text("Encryption Key Error")
-                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.heroTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text(
                     "Your app's encryption key doesn't match the stored data. This is unexpected and your local wallet data on this device can’t be opened safely."
                 )
-                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.body)
                 .foregroundStyle(.coveLightGray.opacity(0.76))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -152,7 +152,7 @@ private struct CatastrophicErrorContent: View {
                     .tint(.white)
 
                 Text("Checking for an available cloud backup...")
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.66))
                     .multilineTextAlignment(.center)
             }
@@ -239,7 +239,7 @@ private struct CatastrophicErrorContent: View {
                 .padding(.top, 2)
 
             Text(text)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.footnote)
                 .foregroundStyle(.white.opacity(0.82))
                 .fixedSize(horizontal: false, vertical: true)
         }

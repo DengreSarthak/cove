@@ -158,11 +158,7 @@ private struct DeviceRestoreContent: View {
     private var heroIcon: some View {
         switch phase {
         case .restoring:
-            OnboardingStatusHero(
-                systemImage: "icloud.and.arrow.down",
-                pulse: true,
-                iconSize: 22
-            )
+            restoringHeroIcon
 
         case .complete:
             OnboardingStatusHero(
@@ -189,18 +185,47 @@ private struct DeviceRestoreContent: View {
         }
     }
 
+    private var restoringHeroIcon: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.btnGradientLight.opacity(0.12), lineWidth: 1)
+                .frame(width: 118, height: 118)
+
+            Circle()
+                .stroke(Color.btnGradientLight.opacity(0.18), lineWidth: 1)
+                .frame(width: 86, height: 86)
+
+            Circle()
+                .stroke(Color.btnGradientLight.opacity(0.34), lineWidth: 1)
+                .frame(width: 58, height: 58)
+
+            Circle()
+                .fill(Color.duskBlue.opacity(0.42))
+                .frame(width: 58, height: 58)
+
+            Circle()
+                .stroke(Color.btnGradientLight.opacity(0.7), lineWidth: 1.3)
+                .frame(width: 58, height: 58)
+
+            Image(systemName: "icloud.and.arrow.down")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.btnGradientLight)
+        }
+        .frame(width: 118, height: 118)
+    }
+
     @ViewBuilder
     private var titleContent: some View {
         switch phase {
         case .restoring:
             VStack(spacing: 10) {
                 Text("Restoring from iCloud...")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.compactTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("This might take a few minutes")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.7))
                     .multilineTextAlignment(.center)
             }
@@ -209,12 +234,12 @@ private struct DeviceRestoreContent: View {
         case .complete:
             VStack(spacing: 10) {
                 Text("You’re all set")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.compactTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("Your wallets have been restored.")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.7))
                     .multilineTextAlignment(.center)
             }
@@ -223,12 +248,12 @@ private struct DeviceRestoreContent: View {
         case .error:
             VStack(spacing: 12) {
                 Text("Restore Failed")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.heroTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("Something went wrong while restoring your wallets")
-                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.76))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -275,7 +300,7 @@ private struct DeviceRestoreContent: View {
                 .padding(.top, 2)
 
             Text(message)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.footnote)
                 .foregroundStyle(.orange.opacity(0.92))
                 .fixedSize(horizontal: false, vertical: true)
         }

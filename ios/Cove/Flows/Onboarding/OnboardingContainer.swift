@@ -146,12 +146,12 @@ private struct CloudCheckContent: View {
 
             VStack(spacing: 10) {
                 Text("Looking for iCloud backup...")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.compactTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("This only takes a moment")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.7))
                     .multilineTextAlignment(.center)
             }

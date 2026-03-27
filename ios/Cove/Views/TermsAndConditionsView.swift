@@ -30,18 +30,18 @@ struct TermsAndConditionsView: View {
 
     private func content(cardSpacing: CGFloat, cardPadding: CGFloat, footerTopSpacing: CGFloat) -> some View {
         VStack(spacing: 0) {
-            VStack(alignment: .trailing, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text("Terms & Conditions")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .font(OnboardingRecoveryTypography.termsTitle)
                     .foregroundStyle(.white)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text("By continuing, you agree to the following:")
-                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .font(OnboardingRecoveryTypography.subheadline)
                     .foregroundStyle(.coveLightGray.opacity(0.74))
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Spacer()
@@ -77,10 +77,11 @@ struct TermsAndConditionsView: View {
                 .frame(height: footerTopSpacing)
 
             Text("By checking these boxes, you accept and agree to the above terms.")
-                .font(.system(size: 17, weight: .medium, design: .rounded))
-                .foregroundStyle(.coveLightGray.opacity(0.7))
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .font(OnboardingRecoveryTypography.subheadline)
+                .foregroundStyle(.coveLightGray.opacity(0.5))
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
 
             Spacer(minLength: 20)
 
@@ -113,13 +114,14 @@ private struct TermsCheckboxCard<Content: View>: View {
             .padding(.top, 1)
 
             content()
-                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .font(OnboardingRecoveryTypography.footnote)
                 .foregroundStyle(.white.opacity(0.82))
                 .tint(.btnGradientLight)
                 .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 8)
         .padding(.vertical, cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
