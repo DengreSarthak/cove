@@ -1071,7 +1071,8 @@ public func FfiConverterTypeDiscoveredPasskeyResult_lower(_ value: DiscoveredPas
 }
 
 
-public enum CloudStorageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+public 
+enum CloudStorageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -1191,7 +1192,8 @@ public func FfiConverterTypeCloudStorageError_lower(_ value: CloudStorageError) 
 }
 
 
-public enum KeychainError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+public 
+enum KeychainError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -1306,8 +1308,7 @@ public func FfiConverterTypeKeychainError_lower(_ value: KeychainError) -> RustB
     return FfiConverterTypeKeychainError.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum PasskeyCredentialPresence: Equatable, Hashable {
     
@@ -1381,7 +1382,8 @@ public func FfiConverterTypePasskeyCredentialPresence_lower(_ value: PasskeyCred
 
 
 
-public enum PasskeyError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+public 
+enum PasskeyError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
