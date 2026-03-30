@@ -120,13 +120,12 @@ extension CoveApp {
             CatastrophicErrorView(
                 onRestoreFromCloud: {
                     startupState = .loading
-                    wipeLocalData()
-                    reinitDatabase()
+                    resetLocalDataForCatastrophicRecovery()
                     rebootstrap()
                 },
                 onWipeOnly: {
                     startupState = .loading
-                    reinitDatabase()
+                    resetLocalDataForCatastrophicRecovery()
                     rebootstrap()
                 }
             )

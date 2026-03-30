@@ -868,15 +868,17 @@ impl RustCloudBackupManager {
     }
 }
 
-/// Wipe all local encrypted databases (main db + per-wallet databases)
+/// Reset local state for the database-encryption-key-mismatch recovery flow
 ///
-/// Callers:
-///   - iOS: CatastrophicErrorView ("Start Fresh" recovery)
-///   - iOS: AboutScreen debug wipe (DEBUG + beta only, paired with cloud wipe)
-///
-/// Removes both current encrypted filenames and legacy plaintext filenames
+/// Removes wallet keychain items, deletes local databases, then reinitializes
+/// the database handle so bootstrap can start from a clean state
 #[uniffi::export]
-pub fn wipe_local_data() {
+pub fn reset_local_data_for_catastrophic_recovery() {
+    wipe_local_data_for_catastrophic_recovery();
+    reinit_database_after_catastrophic_recovery();
+}
+
+fn wipe_local_data_for_catastrophic_recovery() {
     use crate::database::migration::log_remove_file;
 
     wipe_wallet_keychain_items_for_catastrophic_recovery();
@@ -903,10 +905,7 @@ pub fn wipe_local_data() {
     }
 }
 
-/// Re-open the database after wipe+re-bootstrap so `Database::global()`
-/// returns a handle to the fresh file instead of the deleted one
-#[uniffi::export]
-pub fn reinit_database() {
+fn reinit_database_after_catastrophic_recovery() {
     crate::database::wallet_data::DATABASE_CONNECTIONS.write().clear();
     Database::reinit();
 }

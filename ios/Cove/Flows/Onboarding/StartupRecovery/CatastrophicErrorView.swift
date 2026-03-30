@@ -77,7 +77,7 @@ struct CatastrophicErrorView: View {
     }
 
     private func wipeAndRestart() {
-        wipeLocalData()
+        resetLocalDataForCatastrophicRecovery()
         onWipeOnly()
     }
 }

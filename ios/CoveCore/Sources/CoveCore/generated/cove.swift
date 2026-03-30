@@ -34083,25 +34083,13 @@ public func csppNamespacesSubdirectory() -> String  {
 })
 }
 /**
- * Re-open the database after wipe+re-bootstrap so `Database::global()`
- * returns a handle to the fresh file instead of the deleted one
- */
-public func reinitDatabase()  {try! rustCall() {
-    uniffi_cove_fn_func_reinit_database($0
-    )
-}
-}
-/**
- * Wipe all local encrypted databases (main db + per-wallet databases)
+ * Reset local state for the database-encryption-key-mismatch recovery flow
  *
- * Callers:
- * - iOS: CatastrophicErrorView ("Start Fresh" recovery)
- * - iOS: AboutScreen debug wipe (DEBUG + beta only, paired with cloud wipe)
- *
- * Removes both current encrypted filenames and legacy plaintext filenames
+ * Removes wallet keychain items, deletes local databases, then reinitializes
+ * the database handle so bootstrap can start from a clean state
  */
-public func wipeLocalData()  {try! rustCall() {
-    uniffi_cove_fn_func_wipe_local_data($0
+public func resetLocalDataForCatastrophicRecovery()  {try! rustCall() {
+    uniffi_cove_fn_func_reset_local_data_for_catastrophic_recovery($0
     )
 }
 }
@@ -34377,10 +34365,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_func_cspp_namespaces_subdirectory() != 8147) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_func_reinit_database() != 2611) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_checksum_func_wipe_local_data() != 13638) {
+    if (uniffi_cove_checksum_func_reset_local_data_for_catastrophic_recovery() != 25639) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_send_flow_alert_state_from_address_error() != 25696) {
