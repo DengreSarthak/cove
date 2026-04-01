@@ -186,6 +186,9 @@ final class ICloudDriveHelper: @unchecked Sendable {
 
     // MARK: - File coordination
 
+    /// Coordinates iCloud-backed filesystem access because ubiquitous items may
+    /// be placeholders, may resolve to a different concrete URL, and can fail
+    /// if we touch them directly without asking the system to arbitrate first
     private func coordinatedCreateDirectory(at url: URL) throws {
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
 

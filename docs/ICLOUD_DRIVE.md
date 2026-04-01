@@ -64,6 +64,21 @@ Apple documents that metadata can arrive before file contents and that downloads
 
 Once you have the ubiquity container URL, `FileManager` can enumerate what is visible locally in that container. That makes it a good fast path, but Apple still treats `NSMetadataQuery` as the guaranteed way to discover iCloud documents accurately.
 
+## NSFileCoordinator
+
+### Why this app uses it
+
+For iCloud-backed files, coordination is the safe path for actual reads, writes, deletes, and directory creation. The system may need to serialize access with another process, hand back a different concrete URL than the one you started with, or materialize file contents that are still represented by a placeholder.
+
+In this project, the coordinated helpers in `ICloudDriveHelper` are the default for touching file contents in the ubiquity container. Direct `Data(contentsOf:)`, `data.write(to:)`, or `FileManager.removeItem` calls are fine for ordinary local files, but they are less reliable for ubiquitous items.
+
+### How to use it correctly
+
+- use the URL passed into the coordination closure, not the original URL
+- treat the outer coordinator error separately from the inner read or write error
+- keep metadata discovery and file coordination as separate concerns: `NSMetadataQuery` finds the item, `NSFileCoordinator` safely touches it
+- a coordinated read can also trigger download or materialization of an evicted iCloud file
+
 ### Placeholders and download state
 
 A metadata query can return placeholder items before the file contents are local. The actual data is downloaded when one of these happens:
