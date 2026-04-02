@@ -502,18 +502,21 @@ impl RustCloudBackupManager {
         let passkey = PasskeyAccess::global();
         let (master_key, namespace_id) = match self.restore_via_passkey_matching(cloud, passkey) {
             Ok(matched) => {
-                self.ensure_current_restore_operation(operation_id)?;
-                cspp.save_master_key(&matched.master_key)
-                    .map_err_prefix("save master key", CloudBackupError::Internal)?;
-
-                self.ensure_current_restore_operation(operation_id)?;
-                keychain
-                    .save_cspp_passkey_and_namespace(
-                        &matched.credential_id,
-                        matched.prf_salt,
-                        &matched.namespace_id,
-                    )
-                    .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
+                self.with_current_restore_operation_result(operation_id, |_| {
+                    cspp.save_master_key(&matched.master_key)
+                        .map_err_prefix("save master key", CloudBackupError::Internal)?;
+                    Ok(())
+                })?;
+                self.with_current_restore_operation_result(operation_id, |_| {
+                    keychain
+                        .save_cspp_passkey_and_namespace(
+                            &matched.credential_id,
+                            matched.prf_salt,
+                            &matched.namespace_id,
+                        )
+                        .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
+                    Ok(())
+                })?;
 
                 (matched.master_key, matched.namespace_id)
             }
@@ -523,8 +526,13 @@ impl RustCloudBackupManager {
             }
             Err(CloudBackupError::PasskeyMismatch) => {
                 info!("Restore: passkey didn't match, trying local master key fallback");
-                self.ensure_current_restore_operation(operation_id)?;
-                restore_from_local_master_key_fallback(cloud, keychain, &cspp)?
+                let (master_key, namespace_id) = try_restore_from_local_master_key(cloud, &cspp)
+                    .ok_or(CloudBackupError::PasskeyMismatch)?;
+                self.with_current_restore_operation_result(operation_id, |_| {
+                    persist_namespace_id(keychain, &namespace_id)?;
+                    Ok(())
+                })?;
+                (master_key, namespace_id)
             }
             Err(e) => return Err(e),
         };
@@ -562,9 +570,11 @@ impl RustCloudBackupManager {
         )?;
 
         for (index, (record_id, wallet)) in downloaded_wallets.iter().enumerate() {
-            self.ensure_current_restore_operation(operation_id)?;
-            match restore_downloaded_wallet_for_restore(wallet, &mut existing_fingerprints) {
+            match self.with_current_restore_operation_result(operation_id, |_| {
+                restore_downloaded_wallet_for_restore(wallet, &mut existing_fingerprints)
+            }) {
                 Ok(()) => report.wallets_restored += 1,
+                Err(CloudBackupError::Cancelled) => return Err(CloudBackupError::Cancelled),
                 Err(error) => {
                     warn!("Failed to restore wallet {record_id}: {error}");
                     report.wallets_failed += 1;
@@ -773,6 +783,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn restore_from_local_master_key_fallback<S>(
     cloud: &CloudStorage,
     store: &S,

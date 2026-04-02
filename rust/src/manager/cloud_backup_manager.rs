@@ -566,6 +566,9 @@ impl RustCloudBackupManager {
         &self,
         operation_id: u64,
     ) -> Result<(), CloudBackupError> {
+        // only use this as a preflight read
+        // side-effecting restore work must use the locked helpers below so
+        // cancellation can't race between the check and the write
         if self.restore_operation_id.load(Ordering::Acquire) == operation_id {
             return Ok(());
         }
@@ -1390,6 +1393,24 @@ mod tests {
 
         let error = manager.ensure_current_restore_operation(operation_id).unwrap_err();
         assert!(matches!(error, CloudBackupError::Cancelled));
+    }
+
+    #[test]
+    fn stale_restore_operation_does_not_run_locked_update() {
+        let manager = RustCloudBackupManager::init();
+        let stale_operation_id = manager.next_restore_operation_id();
+        manager.next_restore_operation_id();
+        let mut ran = false;
+
+        let error = manager
+            .with_current_restore_operation_result(stale_operation_id, |_| {
+                ran = true;
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::Cancelled));
+        assert!(!ran);
     }
 
     #[test]
