@@ -6,6 +6,7 @@ import SwiftUI
 struct CloudRestoreOfferView: View {
     let onRestore: () -> Void
     let onSkip: () -> Void
+    var warningMessage: String? = nil
     var errorMessage: String? = nil
 
     var body: some View {
@@ -22,12 +23,12 @@ struct CloudRestoreOfferView: View {
                 .frame(height: 44)
 
             VStack(spacing: 16) {
-                Text("iCloud Backup Found")
+                Text(warningMessage == nil ? "iCloud Backup Found" : "Restore from iCloud")
                     .font(OnboardingRecoveryTypography.heroTitle)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
-                Text("A previous iCloud backup was found. Restore your wallet securely using your passkey.")
+                Text(messageBody)
                     .font(OnboardingRecoveryTypography.body)
                     .foregroundStyle(.coveLightGray.opacity(0.76))
                     .multilineTextAlignment(.center)
@@ -39,6 +40,12 @@ struct CloudRestoreOfferView: View {
                 .frame(height: 32)
 
             passkeyCard
+
+            if let warningMessage {
+                warningCard(message: warningMessage)
+                    .padding(.top, 14)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
 
             if let errorMessage {
                 errorCard(message: errorMessage)
@@ -67,7 +74,16 @@ struct CloudRestoreOfferView: View {
         .padding(.bottom, 26)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onboardingRecoveryBackground()
+        .animation(.easeInOut(duration: 0.3), value: warningMessage)
         .animation(.easeInOut(duration: 0.3), value: errorMessage)
+    }
+
+    private var messageBody: String {
+        if warningMessage == nil {
+            return "A previous iCloud backup was found. Restore your wallet securely using your passkey."
+        }
+
+        return "We couldn't confirm whether an iCloud backup is available. If you're reinstalling this device, you can still try restoring with your passkey."
     }
 
     private var heroIcon: some View {
@@ -182,10 +198,43 @@ struct CloudRestoreOfferView: View {
                 .stroke(Color.orange.opacity(0.28), lineWidth: 1)
         )
     }
+
+    private func warningCard(message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.btnGradientLight.opacity(0.95))
+                .padding(.top, 2)
+
+            Text(message)
+                .font(OnboardingRecoveryTypography.footnote)
+                .foregroundStyle(.coveLightGray.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.btnGradientLight.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.btnGradientLight.opacity(0.22), lineWidth: 1)
+        )
+    }
 }
 
 #Preview("Backup Found") {
     CloudRestoreOfferView(onRestore: {}, onSkip: {})
+}
+
+#Preview("Backup Unconfirmed") {
+    CloudRestoreOfferView(
+        onRestore: {},
+        onSkip: {},
+        warningMessage: "We couldn't confirm iCloud backup availability because connectivity or iCloud may be unavailable. You can try restore now or check Cloud Backup later in Settings."
+    )
 }
 
 #Preview("Backup Found Error") {

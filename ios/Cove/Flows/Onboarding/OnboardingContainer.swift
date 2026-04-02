@@ -10,6 +10,7 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
     let app: AppManager
     var step: OnboardingStep
     var isComplete = false
+    var cloudCheckWarning: String?
     var restoreError: String?
 
     typealias Message = OnboardingReconcileMessage
@@ -34,6 +35,7 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
             case .complete:
                 self.isComplete = true
             case let .restoreError(error):
+                self.cloudCheckWarning = nil
                 self.restoreError = error
             }
         }
@@ -77,17 +79,35 @@ struct OnboardingContainer: View {
             }
 
         case .cloudCheck:
-            CloudCheckView { hasBackup in
-                manager.dispatch(.cloudCheckComplete(hasBackup: hasBackup))
+            CloudCheckView { result in
+                switch result {
+                case .backupFound:
+                    manager.cloudCheckWarning = nil
+                    manager.dispatch(.cloudCheckComplete(hasBackup: true))
+
+                case .noBackup:
+                    manager.cloudCheckWarning = nil
+                    manager.dispatch(.cloudCheckComplete(hasBackup: false))
+
+                case let .inconclusive(message):
+                    manager.cloudCheckWarning = message
+                    manager.dispatch(.cloudCheckComplete(hasBackup: true))
+                }
             }
 
         case .restoreOffer:
             CloudRestoreOfferView(
                 onRestore: {
+                    manager.cloudCheckWarning = nil
                     manager.restoreError = nil
                     manager.dispatch(.startRestore)
                 },
-                onSkip: { manager.dispatch(.skipRestore) },
+                onSkip: {
+                    manager.cloudCheckWarning = nil
+                    manager.restoreError = nil
+                    manager.dispatch(.skipRestore)
+                },
+                warningMessage: manager.restoreError == nil ? manager.cloudCheckWarning : nil,
                 errorMessage: manager.restoreError
             )
 
@@ -102,27 +122,37 @@ struct OnboardingContainer: View {
 
 // MARK: - Cloud Check View
 
+private enum CloudBackupCheckResult {
+    case backupFound
+    case noBackup
+    case inconclusive(String)
+}
+
 private struct CloudCheckView: View {
     private static let retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(2), .seconds(3), .seconds(5), .seconds(10)]
+    private static let inconclusiveMessage =
+        "We couldn't confirm iCloud backup availability because connectivity or iCloud may be unavailable. You can try restore now or check Cloud Backup later in Settings."
     private static var maxAttempts: Int {
         retryDelays.count + 1
     }
 
-    let onCloudCheckComplete: (Bool) -> Void
+    let onCloudCheckComplete: (CloudBackupCheckResult) -> Void
 
     var body: some View {
         CloudCheckContent()
             .task {
-                let hasBackup = await Self.checkForCloudBackup { _ in }
+                let result = await Self.checkForCloudBackup { _ in }
                 guard !Task.isCancelled else { return }
-                onCloudCheckComplete(hasBackup)
+                onCloudCheckComplete(result)
             }
     }
 
-    private static func checkForCloudBackup(onAttempt: @Sendable (Int) async -> Void) async -> Bool {
+    private static func checkForCloudBackup(
+        onAttempt: @Sendable (Int) async -> Void
+    ) async -> CloudBackupCheckResult {
         guard FileManager.default.ubiquityIdentityToken != nil else {
             Log.info("[ONBOARDING] iCloud not available")
-            return false
+            return .inconclusive(inconclusiveMessage)
         }
 
         let cloud = CloudStorage(cloudStorage: CloudStorageAccessImpl())
@@ -130,20 +160,25 @@ private struct CloudCheckView: View {
             if Task.isCancelled { return .noBackup }
             await onAttempt(attempt)
             Log.info("[ONBOARDING] calling hasAnyCloudBackup attempt=\(attempt)/\(maxAttempts)")
-            let hasBackup = (try? cloud.hasAnyCloudBackup()) == true
-            Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)/\(maxAttempts)")
-            if hasBackup { return true }
+            do {
+                let hasBackup = try cloud.hasAnyCloudBackup()
+                Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)/\(maxAttempts)")
+                return hasBackup ? .backupFound : .noBackup
+            } catch {
+                Log.error("[ONBOARDING] hasAnyCloudBackup failed attempt=\(attempt)/\(maxAttempts), error: \(error)")
+            }
             guard attempt < maxAttempts else { break }
             do {
                 try await Task.sleep(for: retryDelays[attempt - 1])
             } catch is CancellationError {
-                return false
+                return .noBackup
             } catch {
-                return false
+                Log.error("[ONBOARDING] cloud backup retry sleep failed: \(error)")
+                return .inconclusive(inconclusiveMessage)
             }
         }
 
-        return false
+        return .inconclusive(inconclusiveMessage)
     }
 }
 
