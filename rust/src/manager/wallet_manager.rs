@@ -1410,7 +1410,6 @@ fn downgrade_and_notify_if_needed(
     Database::global().wallets.update_wallet_metadata(updated.clone()).map_err(|e| {
         Error::UnknownError(format!("failed to persist watch-only downgrade for {id}: {e}",))
     })?;
-    CLOUD_BACKUP_MANAGER.handle_wallet_backup_change(updated.id.clone());
 
     deferred.queue(Message::HotWalletKeyMissing(updated.id.clone()));
     Ok(updated)

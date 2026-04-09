@@ -81,6 +81,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         }
     }
 
+    var isCloudBackupEnabled: Bool {
+        rust.isCloudBackupEnabled()
+    }
+
     var lastVerifiedAt: Date? {
         guard case let .verified(lastVerifiedAt) = state.verificationMetadata else { return nil }
         return Date(timeIntervalSince1970: TimeInterval(lastVerifiedAt))
