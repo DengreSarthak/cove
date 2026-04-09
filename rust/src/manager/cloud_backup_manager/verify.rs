@@ -1,23 +1,23 @@
+mod integrity;
 mod passkey_auth;
+mod pending_completion;
 mod session;
 mod wrapper_repair;
 
 use cove_cspp::CsppStore as _;
-use cove_cspp::backup_data::EncryptedWalletBackup;
+use cove_cspp::backup_data::EncryptedMasterKeyBackup;
 use cove_cspp::master_key::MasterKey;
 use cove_cspp::master_key_crypto;
-use cove_cspp::wallet_crypto;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
-use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY, Keychain};
+use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, Keychain};
 use cove_device::passkey::PasskeyAccess;
 use cove_util::ResultExt as _;
 use tracing::{error, info, warn};
-use zeroize::Zeroizing;
 
 use self::passkey_auth::{PasskeyAuthOutcome, PasskeyAuthPolicy, authenticate_with_policy};
 use self::session::VerificationSession;
 use self::wrapper_repair::{WrapperRepairOperation, WrapperRepairStrategy};
-use super::wallets::{count_all_wallets, persist_enabled_cloud_backup_state};
+use super::wallets::persist_enabled_cloud_backup_state;
 use super::{
     CloudBackupDetailResult, CloudBackupError, CloudBackupStatus, DeepVerificationFailure,
     DeepVerificationReport, DeepVerificationResult, PendingVerificationCompletion,
@@ -32,97 +32,7 @@ enum IntegrityDowngrade {
     Unverified,
 }
 
-enum PendingWalletVerificationOutcome {
-    Verified,
-    Failed,
-    Unsupported,
-}
-
 impl RustCloudBackupManager {
-    /// Background startup health check for cloud backup integrity
-    ///
-    /// Verifies the master key is in the keychain and backup files exist in iCloud.
-    /// Returns None if everything is OK, Some(warning) if there's a problem
-    pub(super) fn verify_backup_integrity_impl(&self) -> Option<String> {
-        let state = self.state.read().status.clone();
-        if !matches!(state, CloudBackupStatus::Enabled | CloudBackupStatus::PasskeyMissing) {
-            return None;
-        }
-
-        let mut issues: Vec<&str> = Vec::new();
-
-        let keychain = Keychain::global();
-        let cspp = cove_cspp::Cspp::new(keychain.clone());
-        if !cspp.has_master_key() {
-            issues.push("master key not found in keychain");
-        }
-
-        let mut downgrade = None;
-        let has_prf_salt = keychain.get(CSPP_PRF_SALT_KEY.into()).is_some();
-        let stored_credential_id = load_stored_credential_id(keychain);
-
-        // keep launch integrity checks non-interactive so app startup never presents passkey UI
-        if stored_credential_id.is_none() {
-            issues
-                .push("passkey credential not found — open Cloud Backup in Settings to re-verify");
-            downgrade = Some(IntegrityDowngrade::Unverified);
-        }
-        if !has_prf_salt {
-            issues.push("passkey salt not found — open Cloud Backup in Settings to re-verify");
-            downgrade = Some(IntegrityDowngrade::Unverified);
-        }
-
-        let namespace = match self.current_namespace_id() {
-            Ok(ns) => ns,
-            Err(_) => {
-                issues.push("namespace_id not found in keychain");
-                self.persist_integrity_downgrade(downgrade);
-                return Some(issues.join("; "));
-            }
-        };
-
-        let cloud = CloudStorage::global();
-        if issues.is_empty() {
-            match cloud.list_wallet_backups(namespace) {
-                Ok(wallet_record_ids) => {
-                    let db = Database::global();
-                    let local_count = match count_all_wallets(&db) {
-                        Ok(local_count) => local_count,
-                        Err(error) => {
-                            warn!("Backup integrity: local wallet count failed: {error}");
-                            issues.push("local wallet inventory could not be read");
-                            0
-                        }
-                    };
-                    let cloud_count = wallet_record_ids.len() as u32;
-
-                    if local_count > cloud_count {
-                        info!(
-                            "Backup integrity: {local_count} local wallets vs {cloud_count} in cloud, auto-syncing"
-                        );
-                        if let Err(error) = self.do_sync_unsynced_wallets() {
-                            error!("Backup integrity: auto-sync failed: {error}");
-                            issues.push("some wallets are not backed up");
-                        }
-                    }
-                }
-                Err(error) => {
-                    warn!("Backup integrity: wallet list check failed: {error}");
-                }
-            }
-        }
-
-        if issues.is_empty() {
-            info!("Backup integrity check passed");
-            None
-        } else {
-            self.persist_integrity_downgrade(downgrade);
-            let message = issues.join("; ");
-            error!("Backup integrity issues: {message}");
-            Some(message)
-        }
-    }
-
     /// Deep verification of cloud backup integrity
     ///
     /// Checks state, runs do_deep_verify, wraps errors, persists result
@@ -182,21 +92,6 @@ impl RustCloudBackupManager {
         {
             error!("Failed to persist verification state: {error}");
         }
-    }
-
-    pub(crate) fn finalize_pending_verification_if_ready(&self) {
-        let Some(completion) = self.pending_verification_completion() else { return };
-
-        if !self.pending_verification_uploads_confirmed(&completion) {
-            return;
-        }
-
-        match self.finalize_pending_verification(completion.clone()) {
-            Ok(report) => self.apply_verified_report(report),
-            Err(failure) => self.apply_failed_verification(*failure),
-        }
-
-        self.clear_pending_verification_completion();
     }
 
     pub(crate) fn mark_verification_required_after_wallet_change(&self) {
@@ -286,150 +181,6 @@ impl RustCloudBackupManager {
         Ok(())
     }
 
-    fn pending_verification_uploads_confirmed(
-        &self,
-        completion: &PendingVerificationCompletion,
-    ) -> bool {
-        let pending = Database::global()
-            .cloud_upload_queue
-            .get()
-            .ok()
-            .flatten()
-            .map(|queue| queue.items)
-            .unwrap_or_default();
-
-        let listed_ids = CloudStorage::global()
-            .list_wallet_backups(completion.namespace_id().to_string())
-            .ok()
-            .map(|ids| ids.into_iter().collect::<std::collections::HashSet<_>>())
-            .unwrap_or_default();
-
-        completion.record_ids().iter().all(|record_id| {
-            if listed_ids.contains(record_id) {
-                return true;
-            }
-
-            let pending_item = pending.iter().find(|item| {
-                item.namespace_id == completion.namespace_id() && item.record_id == *record_id
-            });
-
-            pending_item.is_some_and(|item| item.is_confirmed())
-        })
-    }
-
-    fn finalize_pending_verification(
-        &self,
-        completion: PendingVerificationCompletion,
-    ) -> Result<DeepVerificationReport, Box<DeepVerificationFailure>> {
-        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
-        let master_key = cspp
-            .load_master_key_from_store()
-            .map_err_prefix("load local master key", CloudBackupError::Internal)
-            .map_err(|error| {
-                Box::new(self.pending_verification_failure(&completion, error.to_string()))
-            })?
-            .ok_or_else(|| {
-                Box::new(
-                    self.pending_verification_failure(&completion, "no local master key available"),
-                )
-            })?;
-
-        let critical_key = Zeroizing::new(master_key.critical_data_key());
-        let mut report = completion.report().clone();
-
-        for record_id in completion.record_ids() {
-            match self.verify_pending_wallet_backup(&completion, record_id, &critical_key)? {
-                PendingWalletVerificationOutcome::Verified => report.wallets_verified += 1,
-                PendingWalletVerificationOutcome::Failed => report.wallets_failed += 1,
-                PendingWalletVerificationOutcome::Unsupported => report.wallets_unsupported += 1,
-            }
-        }
-
-        report.detail = self.pending_verification_detail(&completion);
-        Ok(report)
-    }
-
-    fn verify_pending_wallet_backup(
-        &self,
-        completion: &PendingVerificationCompletion,
-        record_id: &str,
-        critical_key: &[u8; 32],
-    ) -> Result<PendingWalletVerificationOutcome, Box<DeepVerificationFailure>> {
-        let cloud = CloudStorage::global();
-        let download = cloud
-            .download_wallet_backup(completion.namespace_id().to_string(), record_id.to_string());
-        let wallet_json = match download {
-            Ok(wallet_json) => wallet_json,
-            Err(error) => {
-                warn!("Pending verification: failed to download wallet {record_id}: {error}");
-                return Ok(PendingWalletVerificationOutcome::Failed);
-            }
-        };
-
-        let encrypted: EncryptedWalletBackup =
-            serde_json::from_slice(&wallet_json).map_err(|error| {
-                Box::new(self.pending_verification_failure(
-                    completion,
-                    format!("deserialize wallet {record_id}: {error}"),
-                ))
-            })?;
-
-        if encrypted.version != 1 {
-            return Ok(PendingWalletVerificationOutcome::Unsupported);
-        }
-
-        match wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key) {
-            Ok(_) => Ok(PendingWalletVerificationOutcome::Verified),
-            Err(error) => {
-                warn!("Pending verification: failed to decrypt wallet {record_id}: {error}");
-                Ok(PendingWalletVerificationOutcome::Failed)
-            }
-        }
-    }
-
-    fn pending_verification_detail(
-        &self,
-        completion: &PendingVerificationCompletion,
-    ) -> Option<super::CloudBackupDetail> {
-        match self.refresh_cloud_backup_detail() {
-            Some(CloudBackupDetailResult::Success(detail)) => Some(detail),
-            Some(CloudBackupDetailResult::AccessError(error)) => {
-                warn!("Pending verification: failed to refresh detail: {error}");
-                completion.report().detail.clone()
-            }
-            None => completion.report().detail.clone(),
-        }
-    }
-
-    fn pending_verification_failure(
-        &self,
-        completion: &PendingVerificationCompletion,
-        message: impl Into<String>,
-    ) -> DeepVerificationFailure {
-        DeepVerificationFailure {
-            kind: VerificationFailureKind::Retry,
-            message: message.into(),
-            detail: self.pending_verification_detail(completion),
-        }
-    }
-
-    pub(crate) fn apply_verified_report(&self, report: DeepVerificationReport) {
-        self.persist_verification_result(&DeepVerificationResult::Verified(report.clone()));
-        if let Some(detail) = &report.detail {
-            self.set_detail(Some(detail.clone()));
-        }
-        self.set_verification(VerificationState::Verified(report));
-        self.set_recovery(RecoveryState::Idle);
-    }
-
-    pub(crate) fn apply_failed_verification(&self, failure: DeepVerificationFailure) {
-        self.persist_verification_result(&DeepVerificationResult::Failed(failure.clone()));
-        if let Some(detail) = failure.detail.clone() {
-            self.set_detail(Some(detail));
-        }
-        self.set_verification(VerificationState::Failed(failure));
-    }
-
     pub(crate) fn do_deep_verify_cloud_backup(
         &self,
         force_discoverable: bool,
@@ -484,7 +235,7 @@ impl RustCloudBackupManager {
             }
         };
 
-        let encrypted: cove_cspp::backup_data::EncryptedMasterKeyBackup =
+        let encrypted: EncryptedMasterKeyBackup =
             serde_json::from_slice(&master_json).map_err_str(CloudBackupError::Internal)?;
         if encrypted.version != 1 {
             let version = encrypted.version;
@@ -524,27 +275,6 @@ impl RustCloudBackupManager {
 
         info!("Recovered local master key from cloud");
         Ok(master_key)
-    }
-}
-
-impl RustCloudBackupManager {
-    fn persist_integrity_downgrade(&self, downgrade: Option<IntegrityDowngrade>) {
-        let Some(downgrade) = downgrade else {
-            return;
-        };
-
-        info!("Cloud backup integrity: applying downgrade={downgrade:?}");
-
-        let current = RustCloudBackupManager::load_persisted_state();
-        let Some(new_state) = downgrade_cloud_backup_state(&current, downgrade) else {
-            return;
-        };
-
-        if let Err(error) =
-            self.persist_cloud_backup_state(&new_state, "persist backup integrity state")
-        {
-            error!("Failed to persist backup integrity state: {error}");
-        };
     }
 }
 

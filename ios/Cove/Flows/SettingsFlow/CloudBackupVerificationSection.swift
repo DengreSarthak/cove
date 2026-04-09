@@ -268,7 +268,7 @@ struct VerificationSection: View {
 
     private var actionButtons: some View {
         Section {
-            if manager.detail?.notBackedUp.isEmpty == false {
+            if manager.detail?.needsSync.isEmpty == false {
                 syncButton
             }
 

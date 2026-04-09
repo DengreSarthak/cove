@@ -25,11 +25,11 @@ struct DetailFormContent: View {
 
     var body: some View {
         HeaderSection(lastSync: detail.lastSync, syncHealth: syncHealth)
-        if !detail.backedUp.isEmpty {
-            WalletSections(wallets: detail.backedUp)
+        if !detail.upToDate.isEmpty {
+            WalletSections(wallets: detail.upToDate)
         }
-        if !detail.notBackedUp.isEmpty {
-            WalletSections(wallets: detail.notBackedUp, showNotBackedUpBadge: true)
+        if !detail.needsSync.isEmpty {
+            WalletSections(wallets: detail.needsSync)
         }
         if showCloudOnlySection {
             CloudOnlySection(manager: manager)
@@ -183,6 +183,7 @@ struct CloudOnlySection: View {
     let manager: CloudBackupManager
     @State private var selectedWallet: CloudBackupWalletItem?
     @State private var walletToDelete: CloudBackupWalletItem?
+    @State private var unsupportedRestoreWallet: CloudBackupWalletItem?
 
     private var isOperating: Bool {
         manager.cloudOnlyOperation.operatingRecordId != nil
@@ -200,7 +201,8 @@ struct CloudOnlySection: View {
             CloudOnlyActionDialogs(
                 manager: manager,
                 selectedWallet: $selectedWallet,
-                walletToDelete: $walletToDelete
+                walletToDelete: $walletToDelete,
+                unsupportedRestoreWallet: $unsupportedRestoreWallet
             )
         )
     }
@@ -236,6 +238,10 @@ private struct CloudOnlySectionContent: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+            } else if case let .warning(message: message, error: _) = manager.cloudOnlyOperation {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
         case let .failed(error):
@@ -275,6 +281,7 @@ private struct CloudOnlyActionDialogs: ViewModifier {
     let manager: CloudBackupManager
     @Binding var selectedWallet: CloudBackupWalletItem?
     @Binding var walletToDelete: CloudBackupWalletItem?
+    @Binding var unsupportedRestoreWallet: CloudBackupWalletItem?
 
     func body(content: Content) -> some View {
         content
@@ -288,6 +295,11 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             ) {
                 if let item = selectedWallet {
                     Button("Restore to This Device") {
+                        if item.syncStatus == .unsupportedVersion {
+                            unsupportedRestoreWallet = item
+                            return
+                        }
+
                         manager.dispatch(action: .restoreCloudWallet(recordId: item.recordId))
                     }
                     Button("Delete from iCloud", role: .destructive) {
@@ -312,18 +324,29 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             } message: {
                 Text("This wallet backup will be permanently removed from iCloud")
             }
+            .alert(
+                "Can't Restore \(unsupportedRestoreWallet?.name ?? "Wallet")",
+                isPresented: Binding(
+                    get: { unsupportedRestoreWallet != nil },
+                    set: { if !$0 { unsupportedRestoreWallet = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(
+                    "This backup uses a newer version of Cove and can't be restored on this device yet"
+                )
+            }
     }
 }
 
 struct WalletSections: View {
     let wallets: [CloudBackupWalletItem]
-    var showNotBackedUpBadge = false
 
     private let groupedWallets: GroupedWalletSections
 
-    init(wallets: [CloudBackupWalletItem], showNotBackedUpBadge: Bool = false) {
+    init(wallets: [CloudBackupWalletItem]) {
         self.wallets = wallets
-        self.showNotBackedUpBadge = showNotBackedUpBadge
         groupedWallets = GroupedWalletSections(wallets: wallets)
     }
 
@@ -337,22 +360,8 @@ struct WalletSections: View {
         }
     }
 
-    @ViewBuilder
     private func sectionHeader(for key: GroupKey) -> some View {
-        if showNotBackedUpBadge {
-            HStack {
-                Text(key.title)
-                Text("NOT BACKED UP")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.red, in: Capsule())
-            }
-        } else {
-            Text(key.title)
-        }
+        Text(key.title)
     }
 }
 
@@ -388,20 +397,40 @@ struct WalletItemRow: View {
                 Text(item.name)
                     .fontWeight(.medium)
                 Spacer()
-                StatusBadge(status: item.status)
+                StatusBadge(status: item.syncStatus)
             }
 
             HStack(spacing: 12) {
-                IconLabel("globe", item.network.displayName())
-                IconLabel("wallet.bifold", item.walletType.displayName())
+                if let network = item.network {
+                    IconLabel("globe", network.displayName())
+                }
+                if let walletType = item.walletType {
+                    IconLabel("wallet.bifold", walletType.displayName())
+                }
                 if let fingerprint = item.fingerprint {
                     IconLabel("touchid", fingerprint)
                 }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                if let labelCount = item.labelCount {
+                    IconLabel("tag", "\(labelCount) labels")
+                }
+                if let backupUpdatedAt = item.backupUpdatedAt {
+                    IconLabel("clock", formatDate(backupUpdatedAt))
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    private func formatDate(_ timestamp: UInt64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
@@ -410,17 +439,25 @@ private struct StatusBadge: View {
 
     private var label: String {
         switch status {
-        case .backedUp: "Backed up"
-        case .notBackedUp: "Not backed up"
+        case .dirty: "Dirty"
+        case .uploading: "Uploading"
+        case .uploadedPendingConfirmation: "Uploaded, confirming"
+        case .confirmed: "Confirmed"
+        case .failed: "Failed"
         case .deletedFromDevice: "Not on device"
+        case .unsupportedVersion: "Unsupported"
+        case .remoteStateUnknown: "Unknown"
         }
     }
 
     private var color: Color {
         switch status {
-        case .backedUp: .green
-        case .notBackedUp: .red
-        case .deletedFromDevice: .orange
+        case .dirty: .orange
+        case .uploading, .uploadedPendingConfirmation: .blue
+        case .confirmed: .green
+        case .failed: .red
+        case .deletedFromDevice, .unsupportedVersion: .orange
+        case .remoteStateUnknown: .secondary
         }
     }
 
@@ -436,19 +473,32 @@ private struct StatusBadge: View {
 }
 
 private struct GroupKey: Hashable, Comparable {
-    let network: Network
-    let walletMode: WalletMode
+    let network: Network?
+    let walletMode: WalletMode?
 
     var title: String {
-        switch walletMode {
+        guard let network, let walletMode else {
+            return "Unsupported"
+        }
+
+        return switch walletMode {
         case .decoy: "\(network.displayName()) · Decoy"
         default: network.displayName()
         }
     }
 
     static func < (lhs: GroupKey, rhs: GroupKey) -> Bool {
-        if lhs.network != rhs.network {
-            return lhs.network.displayName() < rhs.network.displayName()
+        if lhs.network == nil || lhs.walletMode == nil {
+            return rhs.network != nil && rhs.walletMode != nil
+        }
+        if rhs.network == nil || rhs.walletMode == nil {
+            return false
+        }
+
+        let lhsNetwork = lhs.network!
+        let rhsNetwork = rhs.network!
+        if lhsNetwork != rhsNetwork {
+            return lhsNetwork.displayName() < rhsNetwork.displayName()
         }
         return lhs.walletMode == .main && rhs.walletMode != .main
     }

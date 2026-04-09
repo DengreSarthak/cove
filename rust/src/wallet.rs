@@ -356,7 +356,7 @@ impl Wallet {
         )?;
 
         database.wallets.save_new_wallet_metadata(metadata.clone())?;
-        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+        CLOUD_BACKUP_MANAGER.handle_wallet_set_change();
 
         Ok(Self { id, metadata, network, bdk: wallet, db: Mutex::new(store.conn) })
     }
@@ -419,7 +419,7 @@ impl Wallet {
         }
 
         database.wallets.save_new_wallet_metadata(metadata.clone())?;
-        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+        CLOUD_BACKUP_MANAGER.handle_wallet_set_change();
 
         Ok(Self { id, metadata, network, bdk: wallet, db: Mutex::new(store.conn) })
     }
@@ -637,7 +637,7 @@ impl Wallet {
         database.global_config.select_wallet(id.clone())?;
 
         Updater::send_update(Update::ClearCachedWalletManager(id.clone()));
-        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+        CLOUD_BACKUP_MANAGER.handle_wallet_backup_change_and_reverify(id.clone());
         Self::try_load_persisted(id)
     }
 }

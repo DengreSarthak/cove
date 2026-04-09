@@ -1,19 +1,22 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
-use redb::TableDefinition;
+use redb::{ReadableTable as _, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use cove_types::redb::Json;
 use cove_util::result_ext::ResultExt as _;
 
 use super::Error;
+use crate::wallet::metadata::WalletId;
 
 const CURRENT_KEY: &str = "current";
 
-pub const CLOUD_BACKUP_STATE_TABLE: TableDefinition<&'static str, Json<PersistedCloudBackupState>> =
+const CLOUD_BACKUP_STATE_TABLE: TableDefinition<&'static str, Json<PersistedCloudBackupState>> =
     TableDefinition::new("cloud_backup_state");
-pub const CLOUD_UPLOAD_QUEUE_TABLE: TableDefinition<&'static str, Json<PendingCloudUploadQueue>> =
-    TableDefinition::new("cloud_upload_queue");
+const CLOUD_BLOB_SYNC_STATE_TABLE: TableDefinition<
+    &'static str,
+    Json<PersistedCloudBlobSyncState>,
+> = TableDefinition::new("cloud_blob_sync_state");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PersistedCloudBackupStatus {
@@ -36,6 +39,8 @@ pub struct PersistedCloudBackupState {
     pub last_verification_requested_at: Option<u64>,
     #[serde(default)]
     pub last_verification_dismissed_at: Option<u64>,
+    #[serde(default)]
+    pub pending_verification_completion: Option<PersistedPendingVerificationCompletion>,
 }
 
 impl Default for PersistedCloudBackupState {
@@ -47,6 +52,7 @@ impl Default for PersistedCloudBackupState {
             last_verified_at: None,
             last_verification_requested_at: None,
             last_verification_dismissed_at: None,
+            pending_verification_completion: None,
         }
     }
 }
@@ -92,95 +98,94 @@ impl PersistedCloudBackupState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedPendingVerificationCompletion {
+    pub report: PersistedDeepVerificationReport,
+    pub namespace_id: String,
+    pub uploads: Vec<PersistedPendingVerificationUpload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedDeepVerificationReport {
+    pub master_key_wrapper_repaired: bool,
+    pub local_master_key_repaired: bool,
+    pub credential_recovered: bool,
+    pub wallets_verified: u32,
+    pub wallets_failed: u32,
+    pub wallets_unsupported: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedPendingVerificationUpload {
+    pub record_id: String,
+    pub expected_revision: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CloudUploadKind {
     BackupBlob,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CloudUploadVerificationState {
-    Pending {
-        attempt_count: u32,
-        #[serde(default)]
-        last_checked_at: Option<u64>,
-    },
-    Confirmed(u64),
+pub struct PersistedCloudBlobSyncState {
+    pub kind: CloudUploadKind,
+    pub namespace_id: String,
+    pub wallet_id: Option<WalletId>,
+    pub record_id: String,
+    pub state: PersistedCloudBlobState,
+}
+
+impl PersistedCloudBlobSyncState {
+    pub fn is_dirty(&self) -> bool {
+        matches!(self.state, PersistedCloudBlobState::Dirty(_))
+    }
+
+    pub fn is_uploaded_pending_confirmation(&self) -> bool {
+        matches!(self.state, PersistedCloudBlobState::UploadedPendingConfirmation(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingCloudUploadItem {
-    pub kind: CloudUploadKind,
-    pub namespace_id: String,
-    pub record_id: String,
-    pub enqueued_at: u64,
-    /// Keeps confirmed blobs until the cloud listing catches up
-    pub verification: CloudUploadVerificationState,
+pub enum PersistedCloudBlobState {
+    Dirty(CloudBlobDirtyState),
+    Uploading(CloudBlobUploadingState),
+    UploadedPendingConfirmation(CloudBlobUploadedPendingConfirmationState),
+    Confirmed(CloudBlobConfirmedState),
+    Failed(CloudBlobFailedState),
 }
 
-impl PendingCloudUploadItem {
-    pub fn is_confirmed(&self) -> bool {
-        matches!(self.verification, CloudUploadVerificationState::Confirmed(_))
-    }
-
-    pub fn confirmed_at(&self) -> Option<u64> {
-        match self.verification {
-            CloudUploadVerificationState::Confirmed(confirmed_at) => Some(confirmed_at),
-            CloudUploadVerificationState::Pending { .. } => None,
-        }
-    }
-
-    pub fn last_checked_at(&self) -> Option<u64> {
-        match self.verification {
-            CloudUploadVerificationState::Pending { last_checked_at, .. } => last_checked_at,
-            CloudUploadVerificationState::Confirmed(_) => None,
-        }
-    }
-
-    pub fn attempt_count(&self) -> u32 {
-        match self.verification {
-            CloudUploadVerificationState::Pending { attempt_count, .. } => attempt_count,
-            CloudUploadVerificationState::Confirmed(_) => 0,
-        }
-    }
-
-    pub fn confirm(&mut self, confirmed_at: u64) {
-        self.verification = CloudUploadVerificationState::Confirmed(confirmed_at);
-    }
-
-    pub fn mark_checked(&mut self, checked_at: u64) {
-        if let CloudUploadVerificationState::Pending { attempt_count, last_checked_at } =
-            &mut self.verification
-        {
-            *attempt_count += 1;
-            *last_checked_at = Some(checked_at);
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudBlobDirtyState {
+    pub changed_at: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingCloudUploadQueue {
-    pub items: Vec<PendingCloudUploadItem>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudBlobUploadingState {
+    pub revision_hash: String,
+    pub started_at: u64,
 }
 
-impl PendingCloudUploadQueue {
-    pub fn has_unconfirmed(&self) -> bool {
-        self.items.iter().any(|item| !item.is_confirmed())
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudBlobUploadedPendingConfirmationState {
+    pub revision_hash: String,
+    pub uploaded_at: u64,
+    pub attempt_count: u32,
+    pub last_checked_at: Option<u64>,
+}
 
-    pub fn cleanup_listed(
-        &mut self,
-        kind: CloudUploadKind,
-        namespace_id: &str,
-        listed_ids: &HashSet<String>,
-    ) {
-        self.items.retain(|item| {
-            if item.kind != kind || item.namespace_id != namespace_id {
-                return true;
-            }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudBlobConfirmedState {
+    pub revision_hash: String,
+    pub confirmed_at: u64,
+}
 
-            !item.is_confirmed() || !listed_ids.contains(&item.record_id)
-        });
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudBlobFailedState {
+    pub revision_hash: Option<String>,
+    #[serde(default)]
+    pub retryable: bool,
+    pub error: String,
+    pub failed_at: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -239,34 +244,50 @@ impl CloudBackupStateTable {
 }
 
 #[derive(Debug, Clone)]
-pub struct CloudUploadQueueTable {
+pub struct CloudBlobSyncStateTable {
     db: Arc<redb::Database>,
 }
 
-impl CloudUploadQueueTable {
+impl CloudBlobSyncStateTable {
     pub fn new(db: Arc<redb::Database>, write_txn: &redb::WriteTransaction) -> Self {
         write_txn
-            .open_table(CLOUD_UPLOAD_QUEUE_TABLE)
-            .expect("failed to create cloud upload queue table");
+            .open_table(CLOUD_BLOB_SYNC_STATE_TABLE)
+            .expect("failed to create cloud blob sync state table");
 
         Self { db }
     }
 
-    pub fn get(&self) -> Result<Option<PendingCloudUploadQueue>, Error> {
+    pub fn get(&self, record_id: &str) -> Result<Option<PersistedCloudBlobSyncState>, Error> {
         let read_txn = self.db.begin_read().map_err_str(Error::DatabaseAccess)?;
         let table =
-            read_txn.open_table(CLOUD_UPLOAD_QUEUE_TABLE).map_err_str(Error::TableAccess)?;
+            read_txn.open_table(CLOUD_BLOB_SYNC_STATE_TABLE).map_err_str(Error::TableAccess)?;
 
-        Ok(table.get(CURRENT_KEY).map_err_str(Error::TableAccess)?.map(|value| value.value()))
+        Ok(table.get(record_id).map_err_str(Error::TableAccess)?.map(|value| value.value()))
     }
 
-    pub fn set(&self, value: &PendingCloudUploadQueue) -> Result<(), Error> {
+    pub fn list(&self) -> Result<Vec<PersistedCloudBlobSyncState>, Error> {
+        let read_txn = self.db.begin_read().map_err_str(Error::DatabaseAccess)?;
+        let table =
+            read_txn.open_table(CLOUD_BLOB_SYNC_STATE_TABLE).map_err_str(Error::TableAccess)?;
+
+        let mut states = Vec::new();
+        let iter = table.iter().map_err_str(Error::TableAccess)?;
+        for entry in iter {
+            let (_, value) = entry.map_err_str(Error::TableAccess)?;
+            states.push(value.value());
+        }
+
+        Ok(states)
+    }
+
+    pub fn set(&self, value: &PersistedCloudBlobSyncState) -> Result<(), Error> {
         let write_txn = self.db.begin_write().map_err_str(Error::DatabaseAccess)?;
 
         {
-            let mut table =
-                write_txn.open_table(CLOUD_UPLOAD_QUEUE_TABLE).map_err_str(Error::TableAccess)?;
-            table.insert(CURRENT_KEY, value).map_err_str(Error::TableAccess)?;
+            let mut table = write_txn
+                .open_table(CLOUD_BLOB_SYNC_STATE_TABLE)
+                .map_err_str(Error::TableAccess)?;
+            table.insert(value.record_id.as_str(), value).map_err_str(Error::TableAccess)?;
         }
 
         write_txn.commit().map_err_str(Error::DatabaseAccess)?;
@@ -274,13 +295,73 @@ impl CloudUploadQueueTable {
         Ok(())
     }
 
-    pub fn delete(&self) -> Result<(), Error> {
+    pub fn set_if_current(
+        &self,
+        current: &PersistedCloudBlobSyncState,
+        next: &PersistedCloudBlobSyncState,
+    ) -> Result<bool, Error> {
+        debug_assert_eq!(current.record_id, next.record_id);
+
         let write_txn = self.db.begin_write().map_err_str(Error::DatabaseAccess)?;
 
         {
-            let mut table =
-                write_txn.open_table(CLOUD_UPLOAD_QUEUE_TABLE).map_err_str(Error::TableAccess)?;
-            table.remove(CURRENT_KEY).map_err_str(Error::TableAccess)?;
+            let mut table = write_txn
+                .open_table(CLOUD_BLOB_SYNC_STATE_TABLE)
+                .map_err_str(Error::TableAccess)?;
+
+            let matches_current = table
+                .get(current.record_id.as_str())
+                .map_err_str(Error::TableAccess)?
+                .map(|stored| stored.value() == *current)
+                .unwrap_or(false);
+
+            if !matches_current {
+                return Ok(false);
+            }
+
+            table.insert(next.record_id.as_str(), next).map_err_str(Error::TableAccess)?;
+        }
+        write_txn.commit().map_err_str(Error::DatabaseAccess)?;
+
+        Ok(true)
+    }
+
+    pub fn delete(&self, record_id: &str) -> Result<(), Error> {
+        let write_txn = self.db.begin_write().map_err_str(Error::DatabaseAccess)?;
+
+        {
+            let mut table = write_txn
+                .open_table(CLOUD_BLOB_SYNC_STATE_TABLE)
+                .map_err_str(Error::TableAccess)?;
+            table.remove(record_id).map_err_str(Error::TableAccess)?;
+        }
+
+        write_txn.commit().map_err_str(Error::DatabaseAccess)?;
+
+        Ok(())
+    }
+
+    pub fn delete_all(&self) -> Result<(), Error> {
+        let write_txn = self.db.begin_write().map_err_str(Error::DatabaseAccess)?;
+
+        {
+            let mut table = write_txn
+                .open_table(CLOUD_BLOB_SYNC_STATE_TABLE)
+                .map_err_str(Error::TableAccess)?;
+            // collect keys before removal because redb iterators borrow table from write_txn,
+            // so CLOUD_BLOB_SYNC_STATE_TABLE cannot be mutated while iterating
+            let keys = table
+                .iter()
+                .map_err_str(Error::TableAccess)?
+                .map(|entry| {
+                    let (key, _) = entry.map_err_str(Error::TableAccess)?;
+                    Ok(key.value().to_string())
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+
+            for key in keys {
+                table.remove(key.as_str()).map_err_str(Error::TableAccess)?;
+            }
         }
 
         write_txn.commit().map_err_str(Error::DatabaseAccess)?;
@@ -318,82 +399,57 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_listed_only_removes_confirmed_matching_items() {
-        let mut queue = PendingCloudUploadQueue {
-            items: vec![
-                PendingCloudUploadItem {
-                    kind: CloudUploadKind::BackupBlob,
-                    namespace_id: "ns-1".into(),
-                    record_id: "wallet-a".into(),
-                    enqueued_at: 10,
-                    verification: CloudUploadVerificationState::Confirmed(12),
-                },
-                PendingCloudUploadItem {
-                    kind: CloudUploadKind::BackupBlob,
-                    namespace_id: "ns-1".into(),
-                    record_id: "wallet-b".into(),
-                    enqueued_at: 11,
-                    verification: CloudUploadVerificationState::Pending {
-                        attempt_count: 0,
-                        last_checked_at: None,
-                    },
-                },
-            ],
+    fn blob_sync_state_helpers_reflect_state() {
+        let confirmed = PersistedCloudBlobSyncState {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: "ns-1".into(),
+            wallet_id: None,
+            record_id: "wallet-a".into(),
+            state: PersistedCloudBlobState::Confirmed(CloudBlobConfirmedState {
+                revision_hash: "rev-1".into(),
+                confirmed_at: 42,
+            }),
         };
 
-        queue.cleanup_listed(
-            CloudUploadKind::BackupBlob,
-            "ns-1",
-            &HashSet::from([String::from("wallet-a")]),
-        );
+        assert!(!confirmed.is_dirty());
 
-        assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].record_id, "wallet-b");
+        let dirty = PersistedCloudBlobSyncState {
+            state: PersistedCloudBlobState::Dirty(CloudBlobDirtyState { changed_at: 10 }),
+            ..confirmed.clone()
+        };
+
+        assert!(dirty.is_dirty());
     }
 
     #[test]
-    fn pending_upload_item_helpers_reflect_pending_state() {
-        let mut item = PendingCloudUploadItem {
+    fn uploaded_pending_confirmation_tracks_attempts() {
+        let state = PersistedCloudBlobSyncState {
             kind: CloudUploadKind::BackupBlob,
             namespace_id: "ns-1".into(),
+            wallet_id: None,
             record_id: "wallet-a".into(),
-            enqueued_at: 10,
-            verification: CloudUploadVerificationState::Pending {
-                attempt_count: 1,
-                last_checked_at: Some(12),
-            },
+            state: PersistedCloudBlobState::UploadedPendingConfirmation(
+                CloudBlobUploadedPendingConfirmationState {
+                    revision_hash: "rev-1".into(),
+                    uploaded_at: 10,
+                    attempt_count: 3,
+                    last_checked_at: Some(12),
+                },
+            ),
         };
 
-        assert!(!item.is_confirmed());
-        assert_eq!(item.confirmed_at(), None);
-        assert_eq!(item.last_checked_at(), Some(12));
-        assert_eq!(item.attempt_count(), 1);
-
-        item.mark_checked(20);
-
-        assert_eq!(item.last_checked_at(), Some(20));
-        assert_eq!(item.attempt_count(), 2);
+        assert!(state.is_uploaded_pending_confirmation());
     }
 
     #[test]
-    fn pending_upload_item_helpers_reflect_confirmed_state() {
-        let mut item = PendingCloudUploadItem {
-            kind: CloudUploadKind::BackupBlob,
-            namespace_id: "ns-1".into(),
-            record_id: "wallet-a".into(),
-            enqueued_at: 10,
-            verification: CloudUploadVerificationState::Confirmed(12),
-        };
+    fn failed_blob_state_defaults_retryable_to_false() {
+        let failed_state: CloudBlobFailedState = serde_json::from_value(serde_json::json!({
+            "revision_hash": "rev-1",
+            "error": "offline",
+            "failed_at": 42
+        }))
+        .unwrap();
 
-        assert!(item.is_confirmed());
-        assert_eq!(item.confirmed_at(), Some(12));
-        assert_eq!(item.last_checked_at(), None);
-        assert_eq!(item.attempt_count(), 0);
-
-        item.mark_checked(20);
-
-        assert_eq!(item.confirmed_at(), Some(12));
-        assert_eq!(item.last_checked_at(), None);
-        assert_eq!(item.attempt_count(), 0);
+        assert!(!failed_state.retryable);
     }
 }

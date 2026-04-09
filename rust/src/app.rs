@@ -17,6 +17,7 @@ use crate::{
         client::{FIAT_CLIENT, PriceResponse},
     },
     keychain::{Keychain, KeychainError},
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     manager::deferred_dispatch::{DeferredDispatch, Dispatchable},
     network::Network,
     node::Node,
@@ -365,7 +366,10 @@ impl FfiApp {
 
         let keychain = Keychain::global();
         match keychain.save_tap_signer_backup(&metadata.id, backup) {
-            Ok(()) => true,
+            Ok(()) => {
+                CLOUD_BACKUP_MANAGER.handle_wallet_backup_change(metadata.id.clone());
+                true
+            }
             Err(e) => {
                 error!("Failed to save tap signer backup for {}: {e}", metadata.id);
                 false

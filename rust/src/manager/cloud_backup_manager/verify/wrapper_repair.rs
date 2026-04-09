@@ -1,6 +1,5 @@
 use cove_cspp::master_key::MasterKey;
 use cove_cspp::master_key_crypto;
-use cove_cspp::wallet_crypto;
 use cove_device::cloud_storage::CloudStorage;
 use cove_device::keychain::Keychain;
 use cove_device::passkey::PasskeyAccess;
@@ -13,7 +12,8 @@ use super::super::{
     CloudBackupError, PASSKEY_RP_ID, RustCloudBackupManager, cspp_master_key_record_id,
 };
 use crate::manager::cloud_backup_manager::wallets::{
-    create_prf_key_without_persisting, discover_or_create_prf_key_without_persisting,
+    WalletBackupLookup, WalletBackupReader, create_prf_key_without_persisting,
+    discover_or_create_prf_key_without_persisting,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,37 +69,29 @@ impl<'a> LocalKeyVerifier<'a> {
     }
 
     fn prove(&self, wallet_record_ids: &[String], master_key: &MasterKey) -> LocalKeyProof {
-        let critical_key = Zeroizing::new(master_key.critical_data_key());
+        let reader = WalletBackupReader::new(
+            self.cloud.clone(),
+            self.namespace.to_owned(),
+            Zeroizing::new(master_key.critical_data_key()),
+        );
         let mut had_wrong_key = false;
         let mut verified = false;
 
         for record_id in wallet_record_ids {
-            let wallet_json = match self
-                .cloud
-                .download_wallet_backup(self.namespace.to_owned(), record_id.clone())
-            {
-                Ok(json) => json,
-                Err(_) => continue,
-            };
-
-            let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
-                match serde_json::from_slice(&wallet_json) {
-                    Ok(encrypted) => encrypted,
-                    Err(_) => continue,
-                };
-
-            if encrypted.version != 1 {
-                continue;
-            }
-
-            match wallet_crypto::decrypt_wallet_backup(&encrypted, &critical_key) {
-                Ok(_) => {
-                    verified = true;
-                    break;
+            match reader.download_encrypted(record_id) {
+                Ok(WalletBackupLookup::Found(encrypted)) => {
+                    match reader.decrypt_entry(&encrypted) {
+                        Ok(_) => {
+                            verified = true;
+                            break;
+                        }
+                        Err(cove_cspp::CsppError::WrongKey) => {
+                            had_wrong_key = true;
+                        }
+                        Err(_) => {}
+                    }
                 }
-                Err(cove_cspp::CsppError::WrongKey) => {
-                    had_wrong_key = true;
-                }
+                Ok(WalletBackupLookup::NotFound | WalletBackupLookup::UnsupportedVersion(_)) => {}
                 Err(_) => {}
             }
         }
@@ -166,7 +158,13 @@ impl<'a> WrapperRepairOperation<'a> {
             .map_err_prefix("save cspp credentials", CloudBackupError::Internal)
             .map_err(WrapperRepairError::Operation)?;
         self.manager
-            .enqueue_pending_uploads(self.namespace, std::iter::once(cspp_master_key_record_id()))
+            .mark_blob_uploaded_pending_confirmation(
+                self.namespace,
+                None,
+                cspp_master_key_record_id(),
+                "master-key-wrapper".into(),
+                jiff::Timestamp::now().as_second().try_into().unwrap_or(0),
+            )
             .map_err(WrapperRepairError::Operation)?;
 
         Ok(())

@@ -9,9 +9,15 @@ use std::sync::{
     Arc, LazyLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use cove_cspp::CsppStore as _;
-use cove_cspp::backup_data::MASTER_KEY_RECORD_ID;
+use cove_cspp::backup_data::{MASTER_KEY_RECORD_ID, wallet_record_id};
+use cove_device::cloud_storage::CloudStorage;
+use cove_tokio::DebouncedTask;
 use cove_util::ResultExt as _;
 use flume::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
@@ -24,12 +30,21 @@ use cove_device::keychain::{
 };
 use cove_types::network::Network;
 
-use crate::backup::model::DescriptorPair as LocalDescriptorPair;
 use crate::database::Database;
-use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
-use crate::wallet::metadata::{WalletId, WalletMode as LocalWalletMode, WalletType};
+use crate::database::cloud_backup::{
+    CloudBlobDirtyState, CloudUploadKind, PersistedCloudBackupState, PersistedCloudBackupStatus,
+    PersistedCloudBlobState, PersistedCloudBlobSyncState, PersistedDeepVerificationReport,
+    PersistedPendingVerificationCompletion, PersistedPendingVerificationUpload,
+};
+use crate::wallet::metadata::{
+    WalletId, WalletMetadata, WalletMode as LocalWalletMode, WalletType,
+};
 
-use self::wallets::{UnpersistedPrfKey, all_local_wallets, count_all_wallets};
+use self::cloud_inventory::RemoteWalletTruth;
+use self::wallets::wallet_metadata_change_requires_upload;
+use self::wallets::{
+    UnpersistedPrfKey, WalletBackupLookup, WalletBackupReader, all_local_wallets, count_all_wallets,
+};
 use super::cloud_backup_detail_manager::{
     CloudOnlyOperation, CloudOnlyState, RecoveryState, SyncState, VerificationState,
 };
@@ -100,6 +115,8 @@ pub struct CloudBackupRestoreReport {
     pub wallets_restored: u32,
     pub wallets_failed: u32,
     pub failed_wallet_errors: Vec<String>,
+    pub labels_failed_wallet_names: Vec<String>,
+    pub labels_failed_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, uniffi::Record)]
@@ -124,19 +141,26 @@ pub struct CloudBackupRestoreProgress {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Enum)]
 pub enum CloudBackupWalletStatus {
-    BackedUp,
-    NotBackedUp,
+    Dirty,
+    Uploading,
+    UploadedPendingConfirmation,
+    Confirmed,
+    Failed,
     DeletedFromDevice,
+    UnsupportedVersion,
+    RemoteStateUnknown,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Record)]
 pub struct CloudBackupWalletItem {
     pub name: String,
-    pub network: Network,
-    pub wallet_mode: LocalWalletMode,
-    pub wallet_type: WalletType,
+    pub network: Option<Network>,
+    pub wallet_mode: Option<LocalWalletMode>,
+    pub wallet_type: Option<WalletType>,
     pub fingerprint: Option<String>,
-    pub status: CloudBackupWalletStatus,
+    pub label_count: Option<u32>,
+    pub backup_updated_at: Option<u64>,
+    pub sync_status: CloudBackupWalletStatus,
     /// Deterministic cloud record ID for the wallet backup represented by this item
     pub record_id: String,
 }
@@ -150,8 +174,8 @@ pub enum CloudBackupDetailResult {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CloudBackupDetail {
     pub last_sync: Option<u64>,
-    pub backed_up: Vec<CloudBackupWalletItem>,
-    pub not_backed_up: Vec<CloudBackupWalletItem>,
+    pub up_to_date: Vec<CloudBackupWalletItem>,
+    pub needs_sync: Vec<CloudBackupWalletItem>,
     /// Number of wallets in the cloud that aren't on this device
     pub cloud_only_count: u32,
 }
@@ -258,7 +282,13 @@ pub(crate) struct PendingEnableSession {
 pub(crate) struct PendingVerificationCompletion {
     report: DeepVerificationReport,
     namespace_id: String,
-    record_ids: Vec<String>,
+    uploads: Vec<PendingVerificationUpload>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingVerificationUpload {
+    record_id: String,
+    expected_revision: String,
 }
 
 impl std::fmt::Debug for PendingEnableSession {
@@ -280,8 +310,12 @@ impl PendingEnableSession {
 }
 
 impl PendingVerificationCompletion {
-    fn new(report: DeepVerificationReport, namespace_id: String, record_ids: Vec<String>) -> Self {
-        Self { report, namespace_id, record_ids }
+    fn new(
+        report: DeepVerificationReport,
+        namespace_id: String,
+        uploads: Vec<PendingVerificationUpload>,
+    ) -> Self {
+        Self { report, namespace_id, uploads }
     }
 
     pub(crate) fn report(&self) -> &DeepVerificationReport {
@@ -292,8 +326,82 @@ impl PendingVerificationCompletion {
         &self.namespace_id
     }
 
-    pub(crate) fn record_ids(&self) -> &[String] {
-        &self.record_ids
+    pub(crate) fn uploads(&self) -> &[PendingVerificationUpload] {
+        &self.uploads
+    }
+
+    fn persisted(&self) -> PersistedPendingVerificationCompletion {
+        PersistedPendingVerificationCompletion {
+            report: PersistedDeepVerificationReport::from(&self.report),
+            namespace_id: self.namespace_id.clone(),
+            uploads: self.uploads.iter().map(PersistedPendingVerificationUpload::from).collect(),
+        }
+    }
+
+    fn from_persisted(completion: PersistedPendingVerificationCompletion) -> Self {
+        Self {
+            report: DeepVerificationReport::from(completion.report),
+            namespace_id: completion.namespace_id,
+            uploads: completion
+                .uploads
+                .into_iter()
+                .map(PendingVerificationUpload::from_persisted)
+                .collect(),
+        }
+    }
+}
+
+impl PendingVerificationUpload {
+    pub(crate) fn new(record_id: String, expected_revision: String) -> Self {
+        Self { record_id, expected_revision }
+    }
+
+    pub(crate) fn record_id(&self) -> &str {
+        &self.record_id
+    }
+
+    pub(crate) fn expected_revision(&self) -> &str {
+        &self.expected_revision
+    }
+
+    fn from_persisted(upload: PersistedPendingVerificationUpload) -> Self {
+        Self { record_id: upload.record_id, expected_revision: upload.expected_revision }
+    }
+}
+
+impl DeepVerificationReport {
+    fn from(report: PersistedDeepVerificationReport) -> Self {
+        Self {
+            master_key_wrapper_repaired: report.master_key_wrapper_repaired,
+            local_master_key_repaired: report.local_master_key_repaired,
+            credential_recovered: report.credential_recovered,
+            wallets_verified: report.wallets_verified,
+            wallets_failed: report.wallets_failed,
+            wallets_unsupported: report.wallets_unsupported,
+            detail: None,
+        }
+    }
+}
+
+impl From<&DeepVerificationReport> for PersistedDeepVerificationReport {
+    fn from(report: &DeepVerificationReport) -> Self {
+        Self {
+            master_key_wrapper_repaired: report.master_key_wrapper_repaired,
+            local_master_key_repaired: report.local_master_key_repaired,
+            credential_recovered: report.credential_recovered,
+            wallets_verified: report.wallets_verified,
+            wallets_failed: report.wallets_failed,
+            wallets_unsupported: report.wallets_unsupported,
+        }
+    }
+}
+
+impl From<&PendingVerificationUpload> for PersistedPendingVerificationUpload {
+    fn from(upload: &PendingVerificationUpload) -> Self {
+        Self {
+            record_id: upload.record_id.clone(),
+            expected_revision: upload.expected_revision.clone(),
+        }
     }
 }
 
@@ -351,6 +459,9 @@ pub struct RustCloudBackupManager {
     pending_verification_completion: Arc<Mutex<Option<PendingVerificationCompletion>>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
     pending_upload_verifier_wakeup: Arc<Notify>,
+    wallet_upload_debouncers: Arc<Mutex<HashMap<WalletId, DebouncedTask<()>>>>,
+    wallet_upload_retry_counts: Arc<Mutex<HashMap<WalletId, u32>>>,
+    active_wallet_uploads: Arc<Mutex<HashSet<WalletId>>>,
     restore_operation_id: Arc<AtomicU64>,
     restore_operation_gate: Arc<Mutex<()>>,
 }
@@ -393,6 +504,9 @@ impl RustCloudBackupManager {
             pending_verification_completion: Arc::new(Mutex::new(None)),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
             pending_upload_verifier_wakeup: Arc::new(Notify::new()),
+            wallet_upload_debouncers: Arc::new(Mutex::new(HashMap::new())),
+            wallet_upload_retry_counts: Arc::new(Mutex::new(HashMap::new())),
+            active_wallet_uploads: Arc::new(Mutex::new(HashSet::new())),
             restore_operation_id: Arc::new(AtomicU64::new(0)),
             restore_operation_gate: Arc::new(Mutex::new(())),
         }
@@ -661,6 +775,18 @@ impl RustCloudBackupManager {
         })
     }
 
+    pub(crate) fn build_cloud_backup_detail_with_remote_truth(
+        &self,
+        wallet_record_ids: &[String],
+        remote_wallet_truth: RemoteWalletTruth,
+    ) -> Result<CloudBackupDetail, CloudBackupError> {
+        Ok(self::cloud_inventory::CloudWalletInventory::load_with_remote_truth(
+            wallet_record_ids,
+            remote_wallet_truth,
+        )?
+        .build_detail())
+    }
+
     pub(crate) fn dismiss_verification_prompt_impl(&self) -> Result<(), CloudBackupError> {
         let mut state = Self::load_persisted_state();
         if state.last_verification_requested_at.is_none() {
@@ -680,6 +806,175 @@ impl RustCloudBackupManager {
             .ok_or_else(|| CloudBackupError::Internal("namespace_id not found in keychain".into()))
     }
 
+    pub(crate) fn mark_wallet_blob_dirty(&self, wallet_id: WalletId) {
+        if !Self::load_persisted_state().is_configured() {
+            return;
+        }
+
+        let Ok(namespace_id) = self.current_namespace_id() else {
+            warn!("Cloud backup dirty mark skipped, namespace is unavailable");
+            return;
+        };
+
+        let changed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+        let record_id = wallet_record_id(wallet_id.as_ref());
+        let sync_state = PersistedCloudBlobSyncState {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id,
+            wallet_id: Some(wallet_id.clone()),
+            record_id,
+            state: PersistedCloudBlobState::Dirty(CloudBlobDirtyState { changed_at }),
+        };
+
+        if let Err(error) = Database::global().cloud_blob_sync_states.set(&sync_state) {
+            error!("Failed to persist dirty cloud backup state: {error}");
+            return;
+        }
+
+        self.reset_wallet_upload_retry_count(&wallet_id);
+        self.schedule_wallet_upload(wallet_id, false);
+    }
+
+    pub(crate) fn handle_wallet_metadata_update(
+        &self,
+        before: &WalletMetadata,
+        after: &WalletMetadata,
+    ) {
+        if wallet_metadata_change_requires_upload(before, after) {
+            self.mark_wallet_blob_dirty(after.id.clone());
+        }
+    }
+
+    pub(crate) fn handle_wallet_backup_change(&self, wallet_id: WalletId) {
+        self.mark_wallet_blob_dirty(wallet_id);
+    }
+
+    pub(crate) fn handle_wallet_backup_change_and_reverify(&self, wallet_id: WalletId) {
+        self.mark_wallet_blob_dirty(wallet_id);
+        self.mark_verification_required_after_wallet_change();
+    }
+
+    pub(crate) fn handle_wallet_set_change(&self) {
+        self.mark_verification_required_after_wallet_change();
+    }
+
+    fn schedule_wallet_upload(&self, wallet_id: WalletId, immediate: bool) {
+        if immediate {
+            self.spawn_wallet_upload(wallet_id);
+            return;
+        }
+
+        self.schedule_wallet_upload_after(wallet_id, LIVE_UPLOAD_DEBOUNCE);
+    }
+
+    fn schedule_wallet_upload_after(&self, wallet_id: WalletId, delay: Duration) {
+        let task = DebouncedTask::new("cloud_wallet_backup_upload", delay);
+        self.wallet_upload_debouncers.lock().insert(wallet_id.clone(), task.clone());
+
+        let this = CLOUD_BACKUP_MANAGER.clone();
+        task.replace(async move {
+            this.spawn_wallet_upload(wallet_id);
+        });
+    }
+
+    fn next_wallet_upload_retry_delay(&self, wallet_id: &WalletId) -> Duration {
+        let mut retry_counts = self.wallet_upload_retry_counts.lock();
+        let retry_count = retry_counts.entry(wallet_id.clone()).or_default();
+        let delay = live_upload_retry_delay_for_attempt(*retry_count);
+        *retry_count = retry_count.saturating_add(1);
+        delay
+    }
+
+    fn reset_wallet_upload_retry_count(&self, wallet_id: &WalletId) {
+        self.wallet_upload_retry_counts.lock().remove(wallet_id);
+    }
+
+    fn spawn_wallet_upload(&self, wallet_id: WalletId) {
+        let this = CLOUD_BACKUP_MANAGER.clone();
+        cove_tokio::task::spawn_blocking(move || this.run_wallet_upload(wallet_id));
+    }
+
+    fn run_wallet_upload(&self, wallet_id: WalletId) {
+        {
+            let mut active_uploads = self.active_wallet_uploads.lock();
+            if !active_uploads.insert(wallet_id.clone()) {
+                return;
+            }
+        }
+
+        let upload_result = self.do_upload_wallet_if_dirty(&wallet_id);
+        if let Err(error) = &upload_result {
+            error!("Cloud backup upload failed for wallet_id={wallet_id}: {error}");
+            self.set_sync_error(Some(error.to_string()));
+        }
+
+        {
+            let mut active_uploads = self.active_wallet_uploads.lock();
+            active_uploads.remove(&wallet_id);
+        }
+
+        if upload_result.is_ok() {
+            self.reset_wallet_upload_retry_count(&wallet_id);
+            self.clear_sync_error_if_no_failed_wallet_uploads();
+        }
+
+        self.schedule_wallet_upload_follow_up(wallet_id);
+    }
+
+    fn resume_wallet_uploads_from_persisted_state(&self) {
+        let states = match Database::global().cloud_blob_sync_states.list() {
+            Ok(states) => states,
+            Err(error) => {
+                error!("Failed to load cloud blob sync states on startup: {error}");
+                return;
+            }
+        };
+
+        for sync_state in states {
+            let Some(wallet_id) = sync_state.wallet_id.clone() else {
+                continue;
+            };
+
+            match &sync_state.state {
+                PersistedCloudBlobState::Dirty(_) => {
+                    self.schedule_wallet_upload(wallet_id, true);
+                }
+                PersistedCloudBlobState::Failed(failed_state) if failed_state.retryable => {
+                    self.schedule_wallet_upload(wallet_id, true);
+                }
+                PersistedCloudBlobState::Uploading(_) => {
+                    if !self.downgrade_interrupted_upload_to_dirty(&sync_state) {
+                        continue;
+                    }
+
+                    self.schedule_wallet_upload(wallet_id, true);
+                }
+                PersistedCloudBlobState::UploadedPendingConfirmation(_)
+                | PersistedCloudBlobState::Confirmed(_) => {}
+                PersistedCloudBlobState::Failed(_) => {}
+            }
+        }
+    }
+
+    fn downgrade_interrupted_upload_to_dirty(
+        &self,
+        sync_state: &PersistedCloudBlobSyncState,
+    ) -> bool {
+        let changed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+
+        match self.replace_blob_state_if_current(
+            sync_state,
+            PersistedCloudBlobState::Dirty(CloudBlobDirtyState { changed_at }),
+            "persist interrupted upload dirty state",
+        ) {
+            Ok(wrote_dirty) => wrote_dirty,
+            Err(error) => {
+                error!("Failed to downgrade interrupted upload state: {error}");
+                false
+            }
+        }
+    }
+
     pub(crate) fn replace_pending_enable_session(&self, session: PendingEnableSession) {
         *self.pending_enable_session.lock() = Some(session);
     }
@@ -696,17 +991,98 @@ impl RustCloudBackupManager {
         &self,
         completion: PendingVerificationCompletion,
     ) {
+        let persisted_completion = completion.persisted();
         *self.pending_verification_completion.lock() = Some(completion);
+
+        let mut state = Self::load_persisted_state();
+        state.pending_verification_completion = Some(persisted_completion);
+        if let Err(error) =
+            self.persist_cloud_backup_state(&state, "persist pending verification completion")
+        {
+            error!("Failed to persist pending verification completion: {error}");
+        }
     }
 
     pub(crate) fn pending_verification_completion(&self) -> Option<PendingVerificationCompletion> {
-        self.pending_verification_completion.lock().clone()
+        if let Some(completion) = self.pending_verification_completion.lock().clone() {
+            return Some(completion);
+        }
+
+        let completion = Self::load_persisted_state()
+            .pending_verification_completion
+            .map(PendingVerificationCompletion::from_persisted);
+        if let Some(completion) = &completion {
+            *self.pending_verification_completion.lock() = Some(completion.clone());
+        }
+
+        completion
     }
 
     pub(crate) fn clear_pending_verification_completion(&self) {
         self.pending_verification_completion.lock().take();
+
+        let mut state = Self::load_persisted_state();
+        if state.pending_verification_completion.is_none() {
+            return;
+        }
+
+        state.pending_verification_completion = None;
+        if let Err(error) =
+            self.persist_cloud_backup_state(&state, "clear pending verification completion")
+        {
+            error!("Failed to clear pending verification completion: {error}");
+        }
     }
 
+    fn load_remote_wallet_truth(
+        &self,
+        wallet_record_ids: &[String],
+    ) -> Result<RemoteWalletTruth, CloudBackupError> {
+        let namespace = self.current_namespace_id()?;
+        let db = Database::global();
+        let local_wallets = all_local_wallets(&db)?;
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        let Some(master_key) = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)?
+        else {
+            return Ok(RemoteWalletTruth {
+                unknown_record_ids: wallet_record_ids.iter().cloned().collect(),
+                ..RemoteWalletTruth::default()
+            });
+        };
+
+        let cloud = CloudStorage::global();
+        let reader = WalletBackupReader::new(
+            cloud.clone(),
+            namespace.clone(),
+            Zeroizing::new(master_key.critical_data_key()),
+        );
+        let mut remote_wallet_truth = RemoteWalletTruth::default();
+
+        for wallet in local_wallets {
+            let record_id = wallet_record_id(wallet.id.as_ref());
+
+            match reader.summary(&record_id) {
+                Ok(WalletBackupLookup::Found(summary)) => {
+                    remote_wallet_truth.summaries_by_record_id.insert(record_id, summary);
+                }
+                Ok(WalletBackupLookup::NotFound) => {}
+                Ok(WalletBackupLookup::UnsupportedVersion(version)) => {
+                    warn!(
+                        "Cloud backup remote truth found unsupported wallet backup version {version} for record_id={record_id}"
+                    );
+                    remote_wallet_truth.unsupported_record_ids.insert(record_id);
+                }
+                Err(error) => {
+                    warn!("Cloud backup remote truth failed for record_id={record_id}: {error}");
+                    remote_wallet_truth.unknown_record_ids.insert(record_id);
+                }
+            }
+        }
+
+        Ok(remote_wallet_truth)
+    }
     fn start_background_operation<F>(
         self: Arc<Self>,
         operation_name: &str,
@@ -855,15 +1231,75 @@ impl RustCloudBackupManager {
     }
 
     pub fn has_pending_cloud_upload_verification(&self) -> bool {
-        Database::global()
-            .cloud_upload_queue
-            .get()
-            .ok()
-            .flatten()
-            .is_some_and(|queue| queue.has_unconfirmed())
+        if self.pending_verification_completion().is_some() {
+            return true;
+        }
+
+        Database::global().cloud_blob_sync_states.list().ok().is_some_and(|states| {
+            states.into_iter().any(|state| state.is_uploaded_pending_confirmation())
+        })
+    }
+
+    fn clear_sync_error_if_no_failed_wallet_uploads(&self) {
+        if self.has_failed_wallet_uploads() {
+            return;
+        }
+
+        self.set_sync_error(None);
+    }
+
+    fn has_failed_wallet_uploads(&self) -> bool {
+        match Database::global().cloud_blob_sync_states.list() {
+            Ok(states) => states
+                .into_iter()
+                .any(|state| matches!(state.state, PersistedCloudBlobState::Failed(_))),
+            Err(error) => {
+                error!("Failed to read cloud blob sync states while clearing sync error: {error}");
+                true
+            }
+        }
+    }
+
+    fn schedule_wallet_upload_follow_up(&self, wallet_id: WalletId) {
+        let record_id = wallet_record_id(wallet_id.as_ref());
+        let sync_state = match Database::global().cloud_blob_sync_states.get(&record_id) {
+            Ok(sync_state) => sync_state,
+            Err(error) => {
+                error!(
+                    "Failed to read wallet upload follow-up state for record_id={record_id}: {error}"
+                );
+                return;
+            }
+        };
+
+        let Some(sync_state) = sync_state else {
+            return;
+        };
+
+        if sync_state.is_dirty() {
+            self.reset_wallet_upload_retry_count(&wallet_id);
+            self.schedule_wallet_upload(wallet_id, true);
+            return;
+        }
+
+        match sync_state.state {
+            PersistedCloudBlobState::Failed(failed_state) if failed_state.retryable => {
+                let delay = self.next_wallet_upload_retry_delay(&wallet_id);
+                self.schedule_wallet_upload_after(wallet_id, delay);
+            }
+            PersistedCloudBlobState::Uploading(_)
+            | PersistedCloudBlobState::UploadedPendingConfirmation(_)
+            | PersistedCloudBlobState::Confirmed(_) => {}
+            PersistedCloudBlobState::Failed(_) => {
+                self.reset_wallet_upload_retry_count(&wallet_id);
+            }
+            PersistedCloudBlobState::Dirty(_) => unreachable!("dirty state handled above"),
+        }
     }
 
     pub fn resume_pending_cloud_upload_verification(&self) {
+        self.sync_persisted_state();
+        self.resume_wallet_uploads_from_persisted_state();
         self.start_pending_upload_verification_loop();
     }
 
@@ -883,7 +1319,7 @@ impl RustCloudBackupManager {
 
         let db = Database::global();
         let _ = db.cloud_backup_state.delete();
-        let _ = db.cloud_upload_queue.delete();
+        let _ = db.cloud_blob_sync_states.delete_all();
 
         self.clear_pending_verification_completion();
         self.set_progress(None);
@@ -911,21 +1347,11 @@ impl RustCloudBackupManager {
     ///
     /// Returns immediately if cloud backup isn't enabled (e.g. during restore)
     pub fn backup_new_wallet(&self, metadata: crate::wallet::metadata::WalletMetadata) {
-        let status = self.state.read().status.clone();
-        if !matches!(status, CloudBackupStatus::Enabled | CloudBackupStatus::PasskeyMissing) {
+        if !Self::load_persisted_state().is_configured() {
             return;
         }
 
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || {
-            if let Err(error) = this.do_backup_wallets(&[metadata]) {
-                warn!("Failed to backup new wallet, retrying full sync: {error}");
-                if let Err(error) = this.do_sync_unsynced_wallets() {
-                    error!("Retry sync also failed: {error}");
-                    this.set_sync_error(Some(error.to_string()));
-                }
-            }
-        });
+        self.handle_wallet_backup_change_and_reverify(metadata.id);
     }
 }
 
@@ -1074,6 +1500,18 @@ pub fn cspp_namespaces_subdirectory() -> String {
     cove_cspp::backup_data::NAMESPACES_SUBDIRECTORY.to_string()
 }
 
+pub(super) const LIVE_UPLOAD_DEBOUNCE: Duration = Duration::from_secs(5);
+const MAX_LIVE_UPLOAD_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+fn live_upload_retry_delay_for_attempt(retry_count: u32) -> Duration {
+    let backoff_multiplier = 1u64 << retry_count.min(4);
+    let delay_secs = LIVE_UPLOAD_DEBOUNCE
+        .as_secs()
+        .saturating_mul(backoff_multiplier)
+        .min(MAX_LIVE_UPLOAD_RETRY_DELAY.as_secs());
+    Duration::from_secs(delay_secs)
+}
+
 fn wipe_wallet_keychain_items_for_catastrophic_recovery() -> Result<(), CatastrophicRecoveryError> {
     let keychain = Keychain::global();
     let wallet_ids = catastrophic_wipe_wallet_ids(
@@ -1161,6 +1599,19 @@ fn wallet_ids_from_wallet_data_dir(wallet_data_dir: &Path) -> Vec<WalletId> {
 pub(crate) fn cloud_backup_test_lock() -> &'static parking_lot::Mutex<()> {
     static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(parking_lot::Mutex::default)
+}
+
+#[cfg(test)]
+impl RustCloudBackupManager {
+    pub(crate) fn run_wallet_upload_for_test(&self, wallet_id: WalletId) {
+        self.run_wallet_upload(wallet_id);
+    }
+
+    pub(crate) fn clear_wallet_upload_debouncers_for_test(&self) {
+        self.wallet_upload_debouncers.lock().clear();
+        self.wallet_upload_retry_counts.lock().clear();
+        self.active_wallet_uploads.lock().clear();
+    }
 }
 
 #[cfg(test)]
@@ -1267,6 +1718,20 @@ mod tests {
     }
 
     #[test]
+    fn live_upload_retry_delay_increases_with_attempts() {
+        assert_eq!(live_upload_retry_delay_for_attempt(0), Duration::from_secs(5));
+        assert_eq!(live_upload_retry_delay_for_attempt(1), Duration::from_secs(10));
+        assert_eq!(live_upload_retry_delay_for_attempt(2), Duration::from_secs(20));
+        assert_eq!(live_upload_retry_delay_for_attempt(3), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn live_upload_retry_delay_caps_at_maximum() {
+        assert_eq!(live_upload_retry_delay_for_attempt(4), MAX_LIVE_UPLOAD_RETRY_DELAY);
+        assert_eq!(live_upload_retry_delay_for_attempt(10), MAX_LIVE_UPLOAD_RETRY_DELAY);
+    }
+
+    #[test]
     fn restore_complete_clears_restore_progress() {
         let _guard = test_lock().lock();
         let manager = RustCloudBackupManager::init();
@@ -1280,6 +1745,8 @@ mod tests {
             wallets_restored: 1,
             wallets_failed: 0,
             failed_wallet_errors: Vec::new(),
+            labels_failed_wallet_names: Vec::new(),
+            labels_failed_errors: Vec::new(),
         }));
 
         assert!(manager.state.read().restore_progress.is_none());
@@ -1293,6 +1760,8 @@ mod tests {
             wallets_restored: 0,
             wallets_failed: 2,
             failed_wallet_errors: vec!["download failed".into()],
+            labels_failed_wallet_names: Vec::new(),
+            labels_failed_errors: Vec::new(),
         };
 
         manager.set_restore_progress(Some(CloudBackupRestoreProgress {
@@ -1379,6 +1848,8 @@ mod tests {
             wallets_restored: 1,
             wallets_failed: 0,
             failed_wallet_errors: Vec::new(),
+            labels_failed_wallet_names: Vec::new(),
+            labels_failed_errors: Vec::new(),
         };
 
         let error = manager
@@ -1470,7 +1941,10 @@ mod tests {
         let _guard = test_lock().lock();
         cove_tokio::init();
         let manager = RustCloudBackupManager::init();
-        manager.debug_reset_cloud_backup_state();
+        manager.set_status(CloudBackupStatus::Disabled);
+        manager.set_progress(None);
+        manager.set_restore_progress(None);
+        manager.set_restore_report(None);
 
         manager.clone().start_background_operation(
             "first_enable",
@@ -1479,7 +1953,7 @@ mod tests {
         );
 
         assert_eq!(manager.state.read().status, CloudBackupStatus::Enabling);
-        manager.debug_reset_cloud_backup_state();
+        manager.set_status(CloudBackupStatus::Disabled);
     }
 
     #[test]

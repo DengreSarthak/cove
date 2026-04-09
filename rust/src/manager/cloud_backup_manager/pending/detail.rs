@@ -1,15 +1,12 @@
-use std::collections::HashSet;
-
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
-use tracing::info;
+use tracing::{info, warn};
 
-use super::super::cloud_inventory::CloudWalletInventory;
 use super::super::{
-    CLOUD_BACKUP_MANAGER, CloudBackupDetail, CloudBackupDetailResult, CloudBackupStatus,
-    RustCloudBackupManager,
+    CloudBackupDetailResult, CloudBackupStatus, RustCloudBackupManager,
+    cloud_inventory::RemoteWalletTruth,
 };
 use crate::database::Database;
-use crate::database::cloud_backup::CloudUploadKind;
+use crate::database::cloud_backup::{CloudBlobConfirmedState, PersistedCloudBlobState};
 
 impl RustCloudBackupManager {
     /// List wallet backups in the current namespace and build detail
@@ -50,50 +47,98 @@ impl RustCloudBackupManager {
             Err(error) => return Some(CloudBackupDetailResult::AccessError(error.to_string())),
         };
 
-        info!(
-            "refresh_cloud_backup_detail: found {} wallet record(s) in cloud",
-            wallet_record_ids.len()
-        );
+        let remote_wallet_truth = match self.load_remote_wallet_truth(&wallet_record_ids) {
+            Ok(remote_wallet_truth) => remote_wallet_truth,
+            Err(error) => return Some(CloudBackupDetailResult::AccessError(error.to_string())),
+        };
+        self.cleanup_confirmed_pending_blobs(&remote_wallet_truth);
 
-        let listed: HashSet<_> = wallet_record_ids.iter().cloned().collect();
-        cleanup_confirmed_pending_blobs(&listed);
-
-        match build_detail_from_wallet_ids(&wallet_record_ids) {
+        match self
+            .build_cloud_backup_detail_with_remote_truth(&wallet_record_ids, remote_wallet_truth)
+        {
             Ok(detail) => Some(CloudBackupDetailResult::Success(detail)),
             Err(error) => Some(CloudBackupDetailResult::AccessError(error.to_string())),
         }
     }
-}
 
-/// Remove confirmed pending blobs that now appear in the cloud listing
-pub(crate) fn cleanup_confirmed_pending_blobs(listed_ids: &HashSet<String>) {
-    let db = Database::global();
-    let table = &db.cloud_upload_queue;
-    let mut queue = match table.get() {
-        Ok(Some(p)) => p,
-        _ => return,
-    };
-    let namespace_id = match CLOUD_BACKUP_MANAGER.current_namespace_id() {
-        Ok(namespace_id) => namespace_id,
-        Err(_) => return,
-    };
+    pub(in crate::manager::cloud_backup_manager) fn cleanup_confirmed_pending_blobs(
+        &self,
+        remote_wallet_truth: &RemoteWalletTruth,
+    ) {
+        let namespace_id = match self.current_namespace_id() {
+            Ok(namespace_id) => namespace_id,
+            Err(_) => return,
+        };
 
-    let before = queue.items.len();
-    queue.cleanup_listed(CloudUploadKind::BackupBlob, &namespace_id, listed_ids);
+        let table = &Database::global().cloud_blob_sync_states;
+        let states = match table.list() {
+            Ok(states) => states,
+            Err(error) => {
+                warn!(
+                    "cleanup_confirmed_pending_blobs: list cloud blob sync states failed: {error}"
+                );
+                return;
+            }
+        };
 
-    if queue.items.len() < before {
-        if queue.items.is_empty() {
-            let _ = table.delete();
-            CLOUD_BACKUP_MANAGER.set_pending_upload_verification(false);
-        } else {
-            let _ = table.set(&queue);
+        let confirmed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+        let mut updated = false;
+
+        for state in states {
+            if state.namespace_id != namespace_id {
+                continue;
+            }
+
+            let PersistedCloudBlobState::UploadedPendingConfirmation(pending_state) = &state.state
+            else {
+                continue;
+            };
+            if !remote_wallet_revision_matches(
+                remote_wallet_truth,
+                &state.record_id,
+                &pending_state.revision_hash,
+            ) {
+                continue;
+            }
+
+            let confirmed_state = crate::database::cloud_backup::PersistedCloudBlobSyncState {
+                state: PersistedCloudBlobState::Confirmed(CloudBlobConfirmedState {
+                    revision_hash: pending_state.revision_hash.clone(),
+                    confirmed_at,
+                }),
+                ..state.clone()
+            };
+
+            let persisted = match table.set_if_current(&state, &confirmed_state) {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    warn!(
+                        "cleanup_confirmed_pending_blobs: persist confirmed record_id={} failed: {error}",
+                        confirmed_state.record_id
+                    );
+                    continue;
+                }
+            };
+            if !persisted {
+                continue;
+            }
+
+            updated = true;
+        }
+
+        if updated {
+            self.set_pending_upload_verification(self.has_pending_cloud_upload_verification());
         }
     }
 }
 
-/// Build a CloudBackupDetail from wallet record IDs by comparing against local wallets
-pub(crate) fn build_detail_from_wallet_ids(
-    wallet_record_ids: &[String],
-) -> Result<CloudBackupDetail, super::super::CloudBackupError> {
-    Ok(CloudWalletInventory::load(wallet_record_ids)?.build_detail())
+pub(crate) fn remote_wallet_revision_matches(
+    remote_wallet_truth: &RemoteWalletTruth,
+    record_id: &str,
+    expected_revision: &str,
+) -> bool {
+    matches!(
+        remote_wallet_truth.summaries_by_record_id.get(record_id),
+        Some(summary) if summary.revision_hash == expected_revision
+    )
 }

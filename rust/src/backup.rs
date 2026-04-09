@@ -1,7 +1,7 @@
 use rand::RngExt as _;
 use zeroize::Zeroizing;
 
-mod crypto;
+pub(crate) mod crypto;
 mod error;
 mod export;
 pub(crate) mod import;

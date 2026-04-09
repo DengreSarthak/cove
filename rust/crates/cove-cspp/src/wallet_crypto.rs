@@ -64,6 +64,12 @@ mod tests {
             }),
             xpub: Some("xpub661MyMwAqRbcF...".to_string()),
             wallet_mode: WalletMode::Main,
+            labels_zstd_jsonl: None,
+            labels_count: 0,
+            labels_hash: None,
+            labels_uncompressed_size: None,
+            content_revision_hash: "test-content-hash".to_string(),
+            updated_at: 42,
         }
     }
 
@@ -151,6 +157,12 @@ mod tests {
                 descriptors: None,
                 xpub: None,
                 wallet_mode: WalletMode::Decoy,
+                labels_zstd_jsonl: None,
+                labels_count: 0,
+                labels_hash: None,
+                labels_uncompressed_size: None,
+                content_revision_hash: "test-content-hash".to_string(),
+                updated_at: 42,
             };
 
             let encrypted = encrypt_wallet_entry(&entry, &critical_key).unwrap();

@@ -1385,9 +1385,13 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_backup_wallet_count(
     ): Short
+    external fun uniffi_cove_checksum_method_rustcloudbackupmanager_clear_sync_error_if_no_failed_wallet_uploads(
+    ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_current_status(
     ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_debug_reset_cloud_backup_state(
+    ): Short
+    external fun uniffi_cove_checksum_method_rustcloudbackupmanager_has_failed_wallet_uploads(
     ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_has_pending_cloud_upload_verification(
     ): Short
@@ -1400,6 +1404,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_listen_for_updates(
     ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification(
+    ): Short
+    external fun uniffi_cove_checksum_method_rustcloudbackupmanager_schedule_wallet_upload_follow_up(
     ): Short
     external fun uniffi_cove_checksum_method_rustcloudbackupmanager_state(
     ): Short
@@ -2389,10 +2395,14 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_backup_wallet_count(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_cove_fn_method_rustcloudbackupmanager_clear_sync_error_if_no_failed_wallet_uploads(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_current_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_debug_reset_cloud_backup_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_cove_fn_method_rustcloudbackupmanager_has_failed_wallet_uploads(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_has_pending_cloud_upload_verification(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_is_cloud_backup_enabled(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -2404,6 +2414,8 @@ internal object UniffiLib {
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_cove_fn_method_rustcloudbackupmanager_schedule_wallet_upload_follow_up(`ptr`: Long,`walletId`: RustBufferWalletId.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_cove_fn_method_rustcloudbackupmanager_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -3982,10 +3994,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_backup_wallet_count() != 17456.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_clear_sync_error_if_no_failed_wallet_uploads() != 7150.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_current_status() != 9796.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_debug_reset_cloud_backup_state() != 45375.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_has_failed_wallet_uploads() != 28193.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_has_pending_cloud_upload_verification() != 4437.toShort()) {
@@ -4004,6 +4022,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification() != 24590.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_schedule_wallet_upload_follow_up() != 63751.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustcloudbackupmanager_state() != 8780.toShort()) {
@@ -17662,6 +17683,8 @@ public interface RustCloudBackupManagerInterface {
      */
     fun `backupWalletCount`(): kotlin.UInt?
     
+    fun `clearSyncErrorIfNoFailedWalletUploads`()
+    
     fun `currentStatus`(): CloudBackupStatus
     
     /**
@@ -17670,6 +17693,8 @@ public interface RustCloudBackupManagerInterface {
      * Debug-only: pair with Swift-side iCloud wipe for full reset
      */
     fun `debugResetCloudBackupState`()
+    
+    fun `hasFailedWalletUploads`(): kotlin.Boolean
     
     fun `hasPendingCloudUploadVerification`(): kotlin.Boolean
     
@@ -17691,6 +17716,8 @@ public interface RustCloudBackupManagerInterface {
     fun `listenForUpdates`(`reconciler`: CloudBackupManagerReconciler)
     
     fun `resumePendingCloudUploadVerification`()
+    
+    fun `scheduleWalletUploadFollowUp`(`walletId`: WalletId)
     
     fun `state`(): CloudBackupState
     
@@ -17864,6 +17891,18 @@ open class RustCloudBackupManager: Disposable, AutoCloseable, RustCloudBackupMan
     }
     
 
+    override fun `clearSyncErrorIfNoFailedWalletUploads`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_cove_fn_method_rustcloudbackupmanager_clear_sync_error_if_no_failed_wallet_uploads(
+        it,
+        _status)
+}
+    }
+    
+    
+
     override fun `currentStatus`(): CloudBackupStatus {
             return FfiConverterTypeCloudBackupStatus.lift(
     callWithHandle {
@@ -17892,6 +17931,19 @@ open class RustCloudBackupManager: Disposable, AutoCloseable, RustCloudBackupMan
 }
     }
     
+    
+
+    override fun `hasFailedWalletUploads`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_cove_fn_method_rustcloudbackupmanager_has_failed_wallet_uploads(
+        it,
+        _status)
+}
+    }
+    )
+    }
     
 
     override fun `hasPendingCloudUploadVerification`(): kotlin.Boolean {
@@ -17974,6 +18026,18 @@ open class RustCloudBackupManager: Disposable, AutoCloseable, RustCloudBackupMan
     UniffiLib.uniffi_cove_fn_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification(
         it,
         _status)
+}
+    }
+    
+    
+
+    override fun `scheduleWalletUploadFollowUp`(`walletId`: WalletId)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_cove_fn_method_rustcloudbackupmanager_schedule_wallet_upload_follow_up(
+        it,
+        FfiConverterTypeWalletId.lower(`walletId`),_status)
 }
     }
     
@@ -27143,9 +27207,9 @@ public object FfiConverterTypeBackupWalletSummary: FfiConverterRustBuffer<Backup
 data class CloudBackupDetail (
     var `lastSync`: kotlin.ULong?
     , 
-    var `backedUp`: List<CloudBackupWalletItem>
+    var `upToDate`: List<CloudBackupWalletItem>
     , 
-    var `notBackedUp`: List<CloudBackupWalletItem>
+    var `needsSync`: List<CloudBackupWalletItem>
     , 
     /**
      * Number of wallets in the cloud that aren't on this device
@@ -27176,15 +27240,15 @@ public object FfiConverterTypeCloudBackupDetail: FfiConverterRustBuffer<CloudBac
 
     override fun allocationSize(value: CloudBackupDetail) = (
             FfiConverterOptionalULong.allocationSize(value.`lastSync`) +
-            FfiConverterSequenceTypeCloudBackupWalletItem.allocationSize(value.`backedUp`) +
-            FfiConverterSequenceTypeCloudBackupWalletItem.allocationSize(value.`notBackedUp`) +
+            FfiConverterSequenceTypeCloudBackupWalletItem.allocationSize(value.`upToDate`) +
+            FfiConverterSequenceTypeCloudBackupWalletItem.allocationSize(value.`needsSync`) +
             FfiConverterUInt.allocationSize(value.`cloudOnlyCount`)
     )
 
     override fun write(value: CloudBackupDetail, buf: ByteBuffer) {
             FfiConverterOptionalULong.write(value.`lastSync`, buf)
-            FfiConverterSequenceTypeCloudBackupWalletItem.write(value.`backedUp`, buf)
-            FfiConverterSequenceTypeCloudBackupWalletItem.write(value.`notBackedUp`, buf)
+            FfiConverterSequenceTypeCloudBackupWalletItem.write(value.`upToDate`, buf)
+            FfiConverterSequenceTypeCloudBackupWalletItem.write(value.`needsSync`, buf)
             FfiConverterUInt.write(value.`cloudOnlyCount`, buf)
     }
 }
@@ -27278,6 +27342,10 @@ data class CloudBackupRestoreReport (
     var `walletsFailed`: kotlin.UInt
     , 
     var `failedWalletErrors`: List<kotlin.String>
+    , 
+    var `labelsFailedWalletNames`: List<kotlin.String>
+    , 
+    var `labelsFailedErrors`: List<kotlin.String>
     
 ){
     
@@ -27297,19 +27365,25 @@ public object FfiConverterTypeCloudBackupRestoreReport: FfiConverterRustBuffer<C
             FfiConverterUInt.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceString.read(buf),
         )
     }
 
     override fun allocationSize(value: CloudBackupRestoreReport) = (
             FfiConverterUInt.allocationSize(value.`walletsRestored`) +
             FfiConverterUInt.allocationSize(value.`walletsFailed`) +
-            FfiConverterSequenceString.allocationSize(value.`failedWalletErrors`)
+            FfiConverterSequenceString.allocationSize(value.`failedWalletErrors`) +
+            FfiConverterSequenceString.allocationSize(value.`labelsFailedWalletNames`) +
+            FfiConverterSequenceString.allocationSize(value.`labelsFailedErrors`)
     )
 
     override fun write(value: CloudBackupRestoreReport, buf: ByteBuffer) {
             FfiConverterUInt.write(value.`walletsRestored`, buf)
             FfiConverterUInt.write(value.`walletsFailed`, buf)
             FfiConverterSequenceString.write(value.`failedWalletErrors`, buf)
+            FfiConverterSequenceString.write(value.`labelsFailedWalletNames`, buf)
+            FfiConverterSequenceString.write(value.`labelsFailedErrors`, buf)
     }
 }
 
@@ -27416,15 +27490,19 @@ public object FfiConverterTypeCloudBackupState: FfiConverterRustBuffer<CloudBack
 data class CloudBackupWalletItem (
     var `name`: kotlin.String
     , 
-    var `network`: Network
+    var `network`: Network?
     , 
-    var `walletMode`: WalletMode
+    var `walletMode`: WalletMode?
     , 
-    var `walletType`: WalletType
+    var `walletType`: WalletType?
     , 
     var `fingerprint`: kotlin.String?
     , 
-    var `status`: CloudBackupWalletStatus
+    var `labelCount`: kotlin.UInt?
+    , 
+    var `backupUpdatedAt`: kotlin.ULong?
+    , 
+    var `syncStatus`: CloudBackupWalletStatus
     , 
     /**
      * Deterministic cloud record ID for the wallet backup represented by this item
@@ -27447,10 +27525,12 @@ public object FfiConverterTypeCloudBackupWalletItem: FfiConverterRustBuffer<Clou
     override fun read(buf: ByteBuffer): CloudBackupWalletItem {
         return CloudBackupWalletItem(
             FfiConverterString.read(buf),
-            FfiConverterTypeNetwork.read(buf),
-            FfiConverterTypeWalletMode.read(buf),
-            FfiConverterTypeWalletType.read(buf),
+            FfiConverterOptionalTypeNetwork.read(buf),
+            FfiConverterOptionalTypeWalletMode.read(buf),
+            FfiConverterOptionalTypeWalletType.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalULong.read(buf),
             FfiConverterTypeCloudBackupWalletStatus.read(buf),
             FfiConverterString.read(buf),
         )
@@ -27458,21 +27538,25 @@ public object FfiConverterTypeCloudBackupWalletItem: FfiConverterRustBuffer<Clou
 
     override fun allocationSize(value: CloudBackupWalletItem) = (
             FfiConverterString.allocationSize(value.`name`) +
-            FfiConverterTypeNetwork.allocationSize(value.`network`) +
-            FfiConverterTypeWalletMode.allocationSize(value.`walletMode`) +
-            FfiConverterTypeWalletType.allocationSize(value.`walletType`) +
+            FfiConverterOptionalTypeNetwork.allocationSize(value.`network`) +
+            FfiConverterOptionalTypeWalletMode.allocationSize(value.`walletMode`) +
+            FfiConverterOptionalTypeWalletType.allocationSize(value.`walletType`) +
             FfiConverterOptionalString.allocationSize(value.`fingerprint`) +
-            FfiConverterTypeCloudBackupWalletStatus.allocationSize(value.`status`) +
+            FfiConverterOptionalUInt.allocationSize(value.`labelCount`) +
+            FfiConverterOptionalULong.allocationSize(value.`backupUpdatedAt`) +
+            FfiConverterTypeCloudBackupWalletStatus.allocationSize(value.`syncStatus`) +
             FfiConverterString.allocationSize(value.`recordId`)
     )
 
     override fun write(value: CloudBackupWalletItem, buf: ByteBuffer) {
             FfiConverterString.write(value.`name`, buf)
-            FfiConverterTypeNetwork.write(value.`network`, buf)
-            FfiConverterTypeWalletMode.write(value.`walletMode`, buf)
-            FfiConverterTypeWalletType.write(value.`walletType`, buf)
+            FfiConverterOptionalTypeNetwork.write(value.`network`, buf)
+            FfiConverterOptionalTypeWalletMode.write(value.`walletMode`, buf)
+            FfiConverterOptionalTypeWalletType.write(value.`walletType`, buf)
             FfiConverterOptionalString.write(value.`fingerprint`, buf)
-            FfiConverterTypeCloudBackupWalletStatus.write(value.`status`, buf)
+            FfiConverterOptionalUInt.write(value.`labelCount`, buf)
+            FfiConverterOptionalULong.write(value.`backupUpdatedAt`, buf)
+            FfiConverterTypeCloudBackupWalletStatus.write(value.`syncStatus`, buf)
             FfiConverterString.write(value.`recordId`, buf)
     }
 }
@@ -33991,9 +34075,14 @@ public object FfiConverterTypeCloudBackupVerificationMetadata : FfiConverterRust
 
 enum class CloudBackupWalletStatus {
     
-    BACKED_UP,
-    NOT_BACKED_UP,
-    DELETED_FROM_DEVICE;
+    DIRTY,
+    UPLOADING,
+    UPLOADED_PENDING_CONFIRMATION,
+    CONFIRMED,
+    FAILED,
+    DELETED_FROM_DEVICE,
+    UNSUPPORTED_VERSION,
+    REMOTE_STATE_UNKNOWN;
 
     
 
@@ -34037,6 +34126,16 @@ sealed class CloudOnlyOperation {
         companion object
     }
     
+    data class Warning(
+        val `message`: kotlin.String, 
+        val `error`: kotlin.String) : CloudOnlyOperation()
+        
+    {
+        
+
+        companion object
+    }
+    
     data class Failed(
         val `error`: kotlin.String) : CloudOnlyOperation()
         
@@ -34066,7 +34165,11 @@ public object FfiConverterTypeCloudOnlyOperation : FfiConverterRustBuffer<CloudO
             2 -> CloudOnlyOperation.Operating(
                 FfiConverterString.read(buf),
                 )
-            3 -> CloudOnlyOperation.Failed(
+            3 -> CloudOnlyOperation.Warning(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            4 -> CloudOnlyOperation.Failed(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -34085,6 +34188,14 @@ public object FfiConverterTypeCloudOnlyOperation : FfiConverterRustBuffer<CloudO
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`recordId`)
+            )
+        }
+        is CloudOnlyOperation.Warning -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`error`)
             )
         }
         is CloudOnlyOperation.Failed -> {
@@ -34107,8 +34218,14 @@ public object FfiConverterTypeCloudOnlyOperation : FfiConverterRustBuffer<CloudO
                 FfiConverterString.write(value.`recordId`, buf)
                 Unit
             }
-            is CloudOnlyOperation.Failed -> {
+            is CloudOnlyOperation.Warning -> {
                 buf.putInt(3)
+                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`error`, buf)
+                Unit
+            }
+            is CloudOnlyOperation.Failed -> {
+                buf.putInt(4)
                 FfiConverterString.write(value.`error`, buf)
                 Unit
             }
@@ -52003,6 +52120,102 @@ public object FfiConverterOptionalTypeTapSignerResponse: FfiConverterRustBuffer<
         } else {
             buf.put(1)
             FfiConverterTypeTapSignerResponse.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeWalletMode: FfiConverterRustBuffer<WalletMode?> {
+    override fun read(buf: ByteBuffer): WalletMode? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeWalletMode.read(buf)
+    }
+
+    override fun allocationSize(value: WalletMode?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeWalletMode.allocationSize(value)
+        }
+    }
+
+    override fun write(value: WalletMode?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeWalletMode.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeWalletType: FfiConverterRustBuffer<WalletType?> {
+    override fun read(buf: ByteBuffer): WalletType? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeWalletType.read(buf)
+    }
+
+    override fun allocationSize(value: WalletType?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeWalletType.allocationSize(value)
+        }
+    }
+
+    override fun write(value: WalletType?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeWalletType.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeNetwork: FfiConverterRustBuffer<Network?> {
+    override fun read(buf: ByteBuffer): Network? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeNetwork.read(buf)
+    }
+
+    override fun allocationSize(value: Network?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeNetwork.allocationSize(value)
+        }
+    }
+
+    override fun write(value: Network?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeNetwork.write(value, buf)
         }
     }
 }

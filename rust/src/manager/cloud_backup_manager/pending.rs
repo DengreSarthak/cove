@@ -1,7 +1,6 @@
 mod detail;
 mod queue_processor;
 
-use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -13,10 +12,12 @@ use self::queue_processor::PendingUploadVerifier;
 use super::{CLOUD_BACKUP_MANAGER, CloudBackupError, RustCloudBackupManager};
 use crate::database::Database;
 use crate::database::cloud_backup::{
-    CloudUploadKind, CloudUploadVerificationState, PendingCloudUploadItem,
+    CloudBlobFailedState, CloudBlobUploadedPendingConfirmationState, CloudUploadKind,
+    PersistedCloudBlobState, PersistedCloudBlobSyncState,
 };
+use crate::wallet::metadata::WalletId;
 
-pub(crate) use detail::cleanup_confirmed_pending_blobs;
+pub(crate) use detail::remote_wallet_revision_matches;
 
 const MAX_PENDING_UPLOAD_VERIFICATION_DELAY: Duration = Duration::from_secs(10);
 
@@ -47,71 +48,48 @@ fn build_pending_upload_backoff() -> FibonacciBackoff {
 }
 
 impl RustCloudBackupManager {
-    pub(super) fn enqueue_pending_uploads<I>(
+    pub(crate) fn replace_blob_state_if_current(
+        &self,
+        current_state: &PersistedCloudBlobSyncState,
+        next_state: PersistedCloudBlobState,
+        error_context: &'static str,
+    ) -> Result<bool, CloudBackupError> {
+        let next_sync_state =
+            PersistedCloudBlobSyncState { state: next_state, ..current_state.clone() };
+
+        Database::global()
+            .cloud_blob_sync_states
+            .set_if_current(current_state, &next_sync_state)
+            .map_err_prefix(error_context, CloudBackupError::Internal)
+    }
+
+    pub(crate) fn mark_blob_uploaded_pending_confirmation(
         &self,
         namespace_id: &str,
-        record_ids: I,
-    ) -> Result<(), CloudBackupError>
-    where
-        I: IntoIterator<Item = String>,
-    {
-        let db = Database::global();
-        let table = &db.cloud_upload_queue;
-        let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-
-        let mut pending = table
-            .get()
-            .map_err_prefix("read pending cloud upload queue", CloudBackupError::Internal)?
-            .unwrap_or_default();
-
-        let mut known_record_ids: HashSet<String> = pending
-            .items
-            .iter()
-            .filter(|item| {
-                item.kind == CloudUploadKind::BackupBlob
-                    && item.namespace_id == namespace_id
-                    && !item.is_confirmed()
-            })
-            .map(|item| item.record_id.clone())
-            .collect();
-
-        for record_id in record_ids {
-            if let Some(existing_item) = pending.items.iter_mut().find(|item| {
-                item.kind == CloudUploadKind::BackupBlob
-                    && item.namespace_id == namespace_id
-                    && item.record_id == record_id
-                    && item.is_confirmed()
-            }) {
-                existing_item.enqueued_at = now;
-                existing_item.verification = CloudUploadVerificationState::Pending {
+        wallet_id: Option<WalletId>,
+        record_id: String,
+        revision_hash: String,
+        uploaded_at: u64,
+    ) -> Result<(), CloudBackupError> {
+        let sync_state = PersistedCloudBlobSyncState {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: namespace_id.to_string(),
+            wallet_id,
+            record_id,
+            state: PersistedCloudBlobState::UploadedPendingConfirmation(
+                CloudBlobUploadedPendingConfirmationState {
+                    revision_hash,
+                    uploaded_at,
                     attempt_count: 0,
                     last_checked_at: None,
-                };
-                known_record_ids.insert(record_id);
-                continue;
-            }
+                },
+            ),
+        };
 
-            if known_record_ids.insert(record_id.clone()) {
-                pending.items.push(PendingCloudUploadItem {
-                    kind: CloudUploadKind::BackupBlob,
-                    namespace_id: namespace_id.to_string(),
-                    record_id,
-                    enqueued_at: now,
-                    verification: CloudUploadVerificationState::Pending {
-                        attempt_count: 0,
-                        last_checked_at: None,
-                    },
-                });
-            }
-        }
-
-        if pending.items.is_empty() {
-            return Ok(());
-        }
-
-        table
-            .set(&pending)
-            .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
+        Database::global()
+            .cloud_blob_sync_states
+            .set(&sync_state)
+            .map_err_prefix("persist uploaded cloud blob state", CloudBackupError::Internal)?;
 
         self.set_pending_upload_verification(true);
         self.wake_pending_upload_verifier();
@@ -120,43 +98,70 @@ impl RustCloudBackupManager {
         Ok(())
     }
 
-    pub(super) fn remove_pending_uploads<I>(
+    pub(crate) fn mark_blob_uploaded_pending_confirmation_if_current(
         &self,
-        namespace_id: &str,
-        record_ids: I,
-    ) -> Result<(), CloudBackupError>
+        current_state: &PersistedCloudBlobSyncState,
+        revision_hash: String,
+        uploaded_at: u64,
+    ) -> Result<bool, CloudBackupError> {
+        let updated = self.replace_blob_state_if_current(
+            current_state,
+            PersistedCloudBlobState::UploadedPendingConfirmation(
+                CloudBlobUploadedPendingConfirmationState {
+                    revision_hash,
+                    uploaded_at,
+                    attempt_count: 0,
+                    last_checked_at: None,
+                },
+            ),
+            "persist uploaded cloud blob state",
+        )?;
+
+        if !updated {
+            return Ok(false);
+        }
+
+        self.set_pending_upload_verification(true);
+        self.wake_pending_upload_verifier();
+        self.start_pending_upload_verification_loop();
+
+        Ok(true)
+    }
+
+    pub(crate) fn mark_blob_failed_if_current(
+        &self,
+        current_state: &PersistedCloudBlobSyncState,
+        revision_hash: Option<String>,
+        retryable: bool,
+        error: String,
+    ) -> Result<bool, CloudBackupError> {
+        let failed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+
+        self.replace_blob_state_if_current(
+            current_state,
+            PersistedCloudBlobState::Failed(CloudBlobFailedState {
+                revision_hash,
+                retryable,
+                error,
+                failed_at,
+            }),
+            "persist failed cloud blob state",
+        )
+    }
+
+    pub(super) fn remove_blob_sync_states<I>(&self, record_ids: I) -> Result<(), CloudBackupError>
     where
         I: IntoIterator<Item = String>,
     {
-        let db = Database::global();
-        let table = &db.cloud_upload_queue;
-        let Some(mut pending) = table
-            .get()
-            .map_err_prefix("read pending cloud upload queue", CloudBackupError::Internal)?
-        else {
-            return Ok(());
-        };
+        let table = &Database::global().cloud_blob_sync_states;
 
-        let record_ids: HashSet<String> = record_ids.into_iter().collect();
-        pending.items.retain(|item| {
-            !(item.kind == CloudUploadKind::BackupBlob
-                && item.namespace_id == namespace_id
-                && record_ids.contains(&item.record_id))
-        });
-
-        if pending.items.is_empty() {
+        for record_id in record_ids {
             table
-                .delete()
-                .map_err_prefix("clear pending cloud upload queue", CloudBackupError::Internal)?;
-            self.set_pending_upload_verification(false);
-            self.wake_pending_upload_verifier();
-            return Ok(());
+                .delete(&record_id)
+                .map_err_prefix("remove cloud blob sync state", CloudBackupError::Internal)?;
         }
 
-        table
-            .set(&pending)
-            .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
-        self.set_pending_upload_verification(true);
+        self.set_pending_upload_verification(self.has_pending_cloud_upload_verification());
         self.wake_pending_upload_verifier();
 
         Ok(())
@@ -252,44 +257,5 @@ mod tests {
         for _ in 0..10 {
             assert!(backoff.next_delay() <= MAX_PENDING_UPLOAD_VERIFICATION_DELAY);
         }
-    }
-
-    fn test_lock() -> &'static parking_lot::Mutex<()> {
-        super::super::cloud_backup_test_lock()
-    }
-
-    #[test]
-    fn enqueue_pending_uploads_reactivates_confirmed_item() {
-        let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let table = &Database::global().cloud_upload_queue;
-
-        table.delete().unwrap();
-        manager.pending_upload_verifier_running.store(true, Ordering::SeqCst);
-
-        table
-            .set(&crate::database::cloud_backup::PendingCloudUploadQueue {
-                items: vec![PendingCloudUploadItem {
-                    kind: CloudUploadKind::BackupBlob,
-                    namespace_id: "namespace-1".into(),
-                    record_id: "record-1".into(),
-                    enqueued_at: 1,
-                    verification: CloudUploadVerificationState::Confirmed(2),
-                }],
-            })
-            .unwrap();
-
-        manager.enqueue_pending_uploads("namespace-1", ["record-1".to_string()]).unwrap();
-
-        let queue = table.get().unwrap().unwrap();
-        assert_eq!(queue.items.len(), 1);
-        assert!(matches!(
-            queue.items[0].verification,
-            CloudUploadVerificationState::Pending { attempt_count: 0, last_checked_at: None }
-        ));
-        assert!(queue.items[0].enqueued_at >= 2);
-
-        manager.pending_upload_verifier_running.store(false, Ordering::SeqCst);
-        table.delete().unwrap();
     }
 }

@@ -37,4 +37,29 @@ pub mod base64_serde {
         let s = String::deserialize(deserializer)?;
         BASE64_STANDARD.decode(&s).map_err(serde::de::Error::custom)
     }
+
+    pub mod option {
+        use base64::Engine as _;
+        use base64::prelude::BASE64_STANDARD;
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            match bytes {
+                Some(bytes) => serializer.serialize_some(&BASE64_STANDARD.encode(bytes)),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            Option::<String>::deserialize(deserializer)?
+                .map(|encoded| BASE64_STANDARD.decode(&encoded).map_err(serde::de::Error::custom))
+                .transpose()
+        }
+    }
 }

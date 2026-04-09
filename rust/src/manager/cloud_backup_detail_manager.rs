@@ -51,6 +51,7 @@ pub enum CloudOnlyState {
 pub enum CloudOnlyOperation {
     Idle,
     Operating { record_id: String },
+    Warning { message: String, error: String },
     Failed { error: String },
 }
 
@@ -296,8 +297,18 @@ impl RustCloudBackupManager {
         });
 
         match self.do_restore_cloud_wallet(record_id) {
-            Ok(()) => {
-                self.set_cloud_only_operation(CloudOnlyOperation::Idle);
+            Ok(outcome) => {
+                if let Some(warning) = outcome.labels_warning {
+                    self.set_cloud_only_operation(CloudOnlyOperation::Warning {
+                        message: format!(
+                            "{} was restored, but its labels could not be imported",
+                            warning.wallet_name
+                        ),
+                        error: warning.error,
+                    });
+                } else {
+                    self.set_cloud_only_operation(CloudOnlyOperation::Idle);
+                }
 
                 let mut cloud_only = self.state.read().cloud_only.clone();
                 if let CloudOnlyState::Loaded { wallets } = &mut cloud_only {

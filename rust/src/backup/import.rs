@@ -13,7 +13,7 @@ use crate::database::global_config::GlobalConfigKey;
 use crate::label_manager::LabelManager;
 use crate::mnemonic::MnemonicExt as _;
 use crate::wallet::fingerprint::Fingerprint;
-use crate::wallet::metadata::{WalletMetadata, WalletMode, WalletType};
+use crate::wallet::metadata::{WalletId, WalletMetadata, WalletMode, WalletType};
 
 use super::crypto;
 use super::error::BackupError;
@@ -228,6 +228,24 @@ enum RestoreSaveBehavior {
     SkipCloudBackup,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum LabelRestoreBehavior {
+    MarkCloudBackupDirty,
+    PreserveCloudBackupClean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LabelRestoreWarning {
+    pub wallet_name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LabelRestoreOutcome {
+    pub imported: bool,
+    pub warning: Option<LabelRestoreWarning>,
+}
+
 async fn restore_wallet(
     backup: &WalletBackup,
     existing_fingerprints: &[(Fingerprint, Network, WalletMode)],
@@ -247,7 +265,6 @@ async fn restore_wallet(
         return Ok(RestoreResult::Skipped { name });
     }
 
-    let mut labels_imported = false;
     let mut labels_failure: Option<(String, String)> = None;
     let mut degraded = cold_missing_backup;
     let fingerprint = metadata
@@ -279,16 +296,16 @@ async fn restore_wallet(
         }
     }
 
-    if let Some(jsonl) = &backup.labels_jsonl
-        && !jsonl.is_empty()
-    {
-        match import_labels(&wallet_id, jsonl) {
-            Ok(()) => labels_imported = true,
-            Err(e) => {
-                warn!("Failed to import labels for wallet {name}: {e}");
-                labels_failure = Some((name.clone(), e.to_string()));
-            }
-        }
+    let labels_outcome = restore_wallet_labels(
+        &wallet_id,
+        &name,
+        backup.labels_jsonl.as_deref(),
+        LabelRestoreBehavior::MarkCloudBackupDirty,
+    );
+    let labels_imported = labels_outcome.imported;
+    if let Some(warning) = labels_outcome.warning {
+        warn!("Failed to import labels for wallet {name}: {}", warning.error);
+        labels_failure = Some((warning.wallet_name, warning.error));
     }
 
     Ok(RestoreResult::Imported { name, labels_imported, labels_failure, fingerprint, degraded })
@@ -505,9 +522,39 @@ pub(crate) fn cleanup_failed_wallet(metadata: &WalletMetadata) -> Vec<String> {
     failures
 }
 
-fn import_labels(id: &cove_types::WalletId, jsonl: &str) -> Result<(), BackupError> {
+fn import_labels(id: &WalletId, jsonl: &str) -> Result<(), BackupError> {
     let manager = LabelManager::new(id.clone());
     manager.import(jsonl).map_err(|e| BackupError::Restore(e.to_string()))
+}
+
+pub(crate) fn restore_wallet_labels(
+    wallet_id: &WalletId,
+    wallet_name: &str,
+    labels_jsonl: Option<&str>,
+    behavior: LabelRestoreBehavior,
+) -> LabelRestoreOutcome {
+    let Some(jsonl) = labels_jsonl.filter(|jsonl| !jsonl.is_empty()) else {
+        return LabelRestoreOutcome::default();
+    };
+
+    let manager = LabelManager::new(wallet_id.clone());
+    let import_result = match behavior {
+        LabelRestoreBehavior::MarkCloudBackupDirty => import_labels(wallet_id, jsonl),
+        LabelRestoreBehavior::PreserveCloudBackupClean => manager
+            .import_without_cloud_backup_dirty(jsonl)
+            .map_err(|error| BackupError::Restore(error.to_string())),
+    };
+
+    match import_result {
+        Ok(()) => LabelRestoreOutcome { imported: true, warning: None },
+        Err(error) => LabelRestoreOutcome {
+            imported: false,
+            warning: Some(LabelRestoreWarning {
+                wallet_name: wallet_name.to_string(),
+                error: error.to_string(),
+            }),
+        },
+    }
 }
 
 fn restore_settings(settings: &super::model::AppSettings) -> Result<(), BackupError> {

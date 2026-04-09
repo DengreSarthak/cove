@@ -4,6 +4,7 @@ use cove_util::result_ext::ResultExt as _;
 
 use crate::{
     database::{InsertOrUpdate, Record, record::Timestamps, wallet_data::WalletDataDb},
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     multi_format::Bip329Labels,
     transaction::{TransactionDetails, TransactionDirection},
     wallet::{Address, metadata::WalletId},
@@ -165,11 +166,14 @@ impl LabelManager {
                 .insert_labels_with_timestamps(output_labels, timestamps)
                 .map_err_str(LabelManagerError::SaveOutputLabels)?;
 
+            self.mark_cloud_backup_dirty();
+
             return Ok(());
         }
 
         // UPDATE
         self.update_labels_for_txn(&tx_id, input_records_iter, output_records_iter)?;
+        self.mark_cloud_backup_dirty();
 
         Ok(())
     }
@@ -221,6 +225,8 @@ impl LabelManager {
             .delete_labels(labels_to_delete)
             .map_err_str(LabelManagerError::DeleteLabels)?;
 
+        self.mark_cloud_backup_dirty();
+
         Ok(())
     }
 
@@ -231,9 +237,7 @@ impl LabelManager {
     }
 
     pub fn import(&self, jsonl: &str) -> Result<(), LabelManagerError> {
-        let labels = Labels::try_from_str(jsonl).map_err_str(LabelManagerError::Parse)?;
-
-        self.import_labels(labels)
+        self.save_imported_labels(parse_labels(jsonl)?, true)
     }
 
     pub async fn export(&self) -> Result<String, LabelManagerError> {
@@ -298,11 +302,36 @@ impl LabelManager {
     }
 
     pub fn import_labels(&self, labels: impl Into<Labels>) -> Result<(), LabelManagerError> {
-        let labels = labels.into();
+        self.save_imported_labels(labels.into(), true)
+    }
 
+    pub(crate) fn export_blocking(&self) -> Result<String, LabelManagerError> {
+        let labels = self.db.labels.all_labels().map_err_str(LabelManagerError::Get)?;
+        labels.export().map_err_str(LabelManagerError::Export)
+    }
+
+    pub(crate) fn import_without_cloud_backup_dirty(
+        &self,
+        jsonl: &str,
+    ) -> Result<(), LabelManagerError> {
+        self.save_imported_labels(parse_labels(jsonl)?, false)
+    }
+
+    fn save_imported_labels(
+        &self,
+        labels: Labels,
+        mark_cloud_backup_dirty: bool,
+    ) -> Result<(), LabelManagerError> {
         self.db.labels.insert_labels(labels).map_err_str(LabelManagerError::Save)?;
+        if mark_cloud_backup_dirty {
+            self.mark_cloud_backup_dirty();
+        }
 
         Ok(())
+    }
+
+    fn mark_cloud_backup_dirty(&self) {
+        CLOUD_BACKUP_MANAGER.handle_wallet_backup_change(self.db.id.clone());
     }
 
     fn update_labels_for_txn(
@@ -500,4 +529,8 @@ impl LabelManager {
             })
             .collect()
     }
+}
+
+fn parse_labels(jsonl: &str) -> Result<Labels, LabelManagerError> {
+    Labels::try_from_str(jsonl).map_err_str(LabelManagerError::Parse)
 }
