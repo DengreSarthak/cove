@@ -1,15 +1,14 @@
 mod detail;
 mod queue_processor;
 
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use backon::{BackoffBuilder as _, FibonacciBackoff, FibonacciBuilder};
+use act_zero::send;
+use backon::{BackoffBuilder as _, FibonacciBuilder};
 use cove_util::ResultExt as _;
-use tracing::{error, info};
 
 use self::queue_processor::PendingUploadVerifier;
-use super::{CLOUD_BACKUP_MANAGER, CloudBackupError, RustCloudBackupManager};
+use super::{CloudBackupError, RustCloudBackupManager};
 use crate::database::Database;
 use crate::database::cloud_backup::{
     CloudBlobFailedState, CloudBlobUploadedPendingConfirmationState, CloudUploadKind,
@@ -19,28 +18,9 @@ use crate::wallet::metadata::WalletId;
 
 pub(crate) use detail::remote_wallet_revision_matches;
 
-const MAX_PENDING_UPLOAD_VERIFICATION_DELAY: Duration = Duration::from_secs(10);
+pub(super) const MAX_PENDING_UPLOAD_VERIFICATION_DELAY: Duration = Duration::from_secs(10);
 
-struct PendingUploadRetryBackoff(FibonacciBackoff);
-
-impl PendingUploadRetryBackoff {
-    fn new() -> Self {
-        Self(build_pending_upload_backoff())
-    }
-
-    fn next_delay(&mut self) -> Duration {
-        self.0
-            .next()
-            .map(|delay| delay.min(MAX_PENDING_UPLOAD_VERIFICATION_DELAY))
-            .unwrap_or(MAX_PENDING_UPLOAD_VERIFICATION_DELAY)
-    }
-
-    fn reset(&mut self) {
-        self.0 = build_pending_upload_backoff();
-    }
-}
-
-fn build_pending_upload_backoff() -> FibonacciBackoff {
+pub(super) fn build_pending_upload_backoff() -> backon::FibonacciBackoff {
     FibonacciBuilder::default()
         .with_max_delay(MAX_PENDING_UPLOAD_VERIFICATION_DELAY)
         .without_max_times()
@@ -168,68 +148,15 @@ impl RustCloudBackupManager {
     }
 
     pub(super) fn start_pending_upload_verification_loop(&self) {
-        if self
-            .pending_upload_verifier_running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        let wakeup = this.pending_upload_verifier_wakeup.clone();
-        cove_tokio::task::spawn(async move {
-            info!("Pending upload verification: started");
-            let mut backoff = PendingUploadRetryBackoff::new();
-
-            loop {
-                let this_for_pass = this.clone();
-                let has_pending = cove_tokio::task::spawn_blocking(move || {
-                    this_for_pass.verify_pending_uploads_once()
-                })
-                .await
-                .unwrap_or_else(|error| {
-                    error!("Pending upload verification task failed: {error}");
-                    true
-                });
-
-                if !has_pending {
-                    break;
-                }
-
-                let delay = backoff.next_delay();
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = wakeup.notified() => {
-                        backoff.reset();
-                    }
-                }
-            }
-
-            this.pending_upload_verifier_running.store(false, Ordering::SeqCst);
-
-            if this.has_pending_cloud_upload_verification() {
-                this.start_pending_upload_verification_loop();
-                return;
-            }
-
-            info!("Pending upload verification: idle");
-        });
+        send!(self.runtime.ensure_pending_upload_verification_loop());
     }
 
-    fn verify_pending_uploads_once(&self) -> bool {
+    pub(crate) fn verify_pending_uploads_once(&self) -> bool {
         PendingUploadVerifier(self.clone()).run_once()
     }
 
-    #[cfg(test)]
-    pub(super) fn verify_pending_uploads_once_for_test(&self) -> bool {
-        self.verify_pending_uploads_once()
-    }
-
     fn wake_pending_upload_verifier(&self) {
-        if self.pending_upload_verifier_running.load(Ordering::SeqCst) {
-            self.pending_upload_verifier_wakeup.notify_one();
-        }
+        send!(self.runtime.wake_pending_upload_verifier());
     }
 }
 
@@ -238,24 +165,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pending_upload_retry_backoff_resets_to_short_delay() {
-        let mut backoff = PendingUploadRetryBackoff::new();
-        let initial_delay = backoff.next_delay();
+    fn pending_upload_backoff_resets_to_short_delay() {
+        let mut backoff = build_pending_upload_backoff();
+        let initial_delay = backoff.next().expect("expected initial delay");
 
-        let _ = backoff.next_delay();
-        let _ = backoff.next_delay();
+        let _ = backoff.next();
+        let _ = backoff.next();
 
-        backoff.reset();
+        let mut backoff = build_pending_upload_backoff();
 
-        assert_eq!(backoff.next_delay(), initial_delay);
+        assert_eq!(backoff.next().expect("expected reset delay"), initial_delay);
     }
 
     #[test]
-    fn pending_upload_retry_backoff_caps_at_max_delay() {
-        let mut backoff = PendingUploadRetryBackoff::new();
+    fn pending_upload_backoff_caps_at_max_delay() {
+        let mut backoff = build_pending_upload_backoff();
 
         for _ in 0..10 {
-            assert!(backoff.next_delay() <= MAX_PENDING_UPLOAD_VERIFICATION_DELAY);
+            assert!(
+                backoff.next().expect("expected delay") <= MAX_PENDING_UPLOAD_VERIFICATION_DELAY
+            );
         }
     }
 }

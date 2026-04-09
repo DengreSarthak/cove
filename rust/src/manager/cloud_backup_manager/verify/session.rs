@@ -35,8 +35,8 @@ enum MasterKeyResolution {
     Finished(DeepVerificationResult),
 }
 
-pub(crate) struct VerificationSession<'a> {
-    pub(crate) manager: &'a RustCloudBackupManager,
+pub(crate) struct VerificationSession {
+    pub(crate) manager: RustCloudBackupManager,
     pub(crate) keychain: Keychain,
     pub(crate) cspp: cove_cspp::Cspp<Keychain>,
     pub(crate) cloud: CloudStorage,
@@ -49,9 +49,9 @@ pub(crate) struct VerificationSession<'a> {
     pub(crate) force_discoverable: bool,
 }
 
-impl<'a> VerificationSession<'a> {
+impl VerificationSession {
     pub(crate) fn new(
-        manager: &'a RustCloudBackupManager,
+        manager: &RustCloudBackupManager,
         force_discoverable: bool,
     ) -> Result<Self, CloudBackupError> {
         let keychain = Keychain::global().clone();
@@ -61,7 +61,7 @@ impl<'a> VerificationSession<'a> {
             .map_err_prefix("load local master key", CloudBackupError::Internal)?;
 
         Ok(Self {
-            manager,
+            manager: manager.clone(),
             keychain,
             cspp,
             cloud: CloudStorage::global().clone(),

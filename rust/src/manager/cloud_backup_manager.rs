@@ -1,27 +1,22 @@
 mod cloud_inventory;
 mod ops;
 mod pending;
+pub(crate) mod runtime_actor;
 mod verify;
 mod wallets;
 
 use std::path::Path;
-use std::sync::{
-    Arc, LazyLock,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
+use act_zero::{Addr, call, send};
 use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::{MASTER_KEY_RECORD_ID, wallet_record_id};
 use cove_device::cloud_storage::CloudStorage;
-use cove_tokio::DebouncedTask;
+use cove_tokio::task::spawn_actor;
 use cove_util::ResultExt as _;
 use flume::{Receiver, Sender};
-use parking_lot::{Mutex, RwLock};
-use tokio::sync::Notify;
+use parking_lot::RwLock;
 use tracing::{error, info, warn};
 use zeroize::Zeroizing;
 
@@ -41,6 +36,7 @@ use crate::wallet::metadata::{
 };
 
 use self::cloud_inventory::RemoteWalletTruth;
+use self::runtime_actor::{CloudBackupOperation, CloudBackupRuntimeActor, RestoreOperation};
 use self::wallets::wallet_metadata_change_requires_upload;
 use self::wallets::{
     UnpersistedPrfKey, WalletBackupLookup, WalletBackupReader, all_local_wallets, count_all_wallets,
@@ -474,15 +470,7 @@ pub struct RustCloudBackupManager {
     pub state: Arc<RwLock<CloudBackupState>>,
     pub reconciler: Sender<Message>,
     pub reconcile_receiver: Arc<Receiver<Message>>,
-    pending_enable_session: Arc<Mutex<Option<PendingEnableSession>>>,
-    pending_verification_completion: Arc<Mutex<Option<PendingVerificationCompletion>>>,
-    pending_upload_verifier_running: Arc<AtomicBool>,
-    pending_upload_verifier_wakeup: Arc<Notify>,
-    wallet_upload_debouncers: Arc<Mutex<HashMap<WalletId, DebouncedTask<()>>>>,
-    wallet_upload_retry_counts: Arc<Mutex<HashMap<WalletId, u32>>>,
-    active_wallet_uploads: Arc<Mutex<HashSet<WalletId>>>,
-    restore_operation_id: Arc<AtomicU64>,
-    restore_operation_gate: Arc<Mutex<()>>,
+    pub(crate) runtime: Addr<CloudBackupRuntimeActor>,
 }
 
 impl RustCloudBackupManager {
@@ -518,21 +506,12 @@ impl RustCloudBackupManager {
 
         let (sender, receiver) = flume::bounded(1000);
 
-        Self {
+        Arc::new_cyclic(|manager| Self {
             state: Arc::new(RwLock::new(CloudBackupState::default())),
             reconciler: sender,
             reconcile_receiver: Arc::new(receiver),
-            pending_enable_session: Arc::new(Mutex::new(None)),
-            pending_verification_completion: Arc::new(Mutex::new(None)),
-            pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
-            pending_upload_verifier_wakeup: Arc::new(Notify::new()),
-            wallet_upload_debouncers: Arc::new(Mutex::new(HashMap::new())),
-            wallet_upload_retry_counts: Arc::new(Mutex::new(HashMap::new())),
-            active_wallet_uploads: Arc::new(Mutex::new(HashSet::new())),
-            restore_operation_id: Arc::new(AtomicU64::new(0)),
-            restore_operation_gate: Arc::new(Mutex::new(())),
-        }
-        .into()
+            runtime: spawn_actor(CloudBackupRuntimeActor::new(manager.clone())),
+        })
     }
 
     fn verification_metadata_for(
@@ -688,82 +667,6 @@ impl RustCloudBackupManager {
         );
     }
 
-    fn next_restore_operation_id(&self) -> u64 {
-        let _gate = self.restore_operation_gate.lock();
-        self.restore_operation_id.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    fn invalidate_restore_operation(&self) {
-        let _gate = self.restore_operation_gate.lock();
-        self.restore_operation_id.fetch_add(1, Ordering::AcqRel);
-    }
-
-    pub(crate) fn ensure_current_restore_operation(
-        &self,
-        operation_id: u64,
-    ) -> Result<(), CloudBackupError> {
-        // only use this as a preflight read
-        // side-effecting restore work must use the locked helpers below so
-        // cancellation can't race between the check and the write
-        if self.restore_operation_id.load(Ordering::Acquire) == operation_id {
-            return Ok(());
-        }
-
-        Err(CloudBackupError::Cancelled)
-    }
-
-    pub(crate) fn set_status_for_restore_operation(
-        &self,
-        operation_id: u64,
-        status: CloudBackupStatus,
-    ) -> Result<(), CloudBackupError> {
-        self.with_current_restore_operation(operation_id, |this| this.set_status(status))
-    }
-
-    pub(crate) fn set_restore_progress_for_restore_operation(
-        &self,
-        operation_id: u64,
-        progress: Option<CloudBackupRestoreProgress>,
-    ) -> Result<(), CloudBackupError> {
-        self.with_current_restore_operation(operation_id, |this| {
-            this.set_restore_progress(progress)
-        })
-    }
-
-    pub(crate) fn set_restore_report_for_restore_operation(
-        &self,
-        operation_id: u64,
-        report: Option<CloudBackupRestoreReport>,
-    ) -> Result<(), CloudBackupError> {
-        self.with_current_restore_operation(operation_id, |this| this.set_restore_report(report))
-    }
-
-    fn with_current_restore_operation<T>(
-        &self,
-        operation_id: u64,
-        update: impl FnOnce(&Self) -> T,
-    ) -> Result<T, CloudBackupError> {
-        let _gate = self.restore_operation_gate.lock();
-        if self.restore_operation_id.load(Ordering::Acquire) != operation_id {
-            return Err(CloudBackupError::Cancelled);
-        }
-
-        Ok(update(self))
-    }
-
-    fn with_current_restore_operation_result<T>(
-        &self,
-        operation_id: u64,
-        update: impl FnOnce(&Self) -> Result<T, CloudBackupError>,
-    ) -> Result<T, CloudBackupError> {
-        let _gate = self.restore_operation_gate.lock();
-        if self.restore_operation_id.load(Ordering::Acquire) != operation_id {
-            return Err(CloudBackupError::Cancelled);
-        }
-
-        update(self)
-    }
-
     pub(crate) fn persist_cloud_backup_state(
         &self,
         state: &PersistedCloudBackupState,
@@ -782,19 +685,50 @@ impl RustCloudBackupManager {
 
     pub(crate) fn persist_cloud_backup_state_for_restore_operation(
         &self,
-        operation_id: u64,
+        operation: &RestoreOperation,
         state: &PersistedCloudBackupState,
         context: &str,
     ) -> Result<(), CloudBackupError> {
-        self.with_current_restore_operation_result(operation_id, |this| {
+        operation.run_result(|| {
             Database::global()
                 .cloud_backup_state
                 .set(state)
                 .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
-            this.set_status(Self::runtime_status_for(state));
-            this.refresh_persisted_flags();
+            self.set_status(Self::runtime_status_for(state));
+            self.refresh_persisted_flags();
             Ok(())
         })
+    }
+
+    pub(crate) fn ensure_current_restore_operation(
+        &self,
+        operation: &RestoreOperation,
+    ) -> Result<(), CloudBackupError> {
+        operation.ensure_current()
+    }
+
+    pub(crate) fn set_status_for_restore_operation(
+        &self,
+        operation: &RestoreOperation,
+        status: CloudBackupStatus,
+    ) -> Result<(), CloudBackupError> {
+        operation.run(|| self.set_status(status)).map(|_| ())
+    }
+
+    pub(crate) fn set_restore_progress_for_restore_operation(
+        &self,
+        operation: &RestoreOperation,
+        progress: Option<CloudBackupRestoreProgress>,
+    ) -> Result<(), CloudBackupError> {
+        operation.run(|| self.set_restore_progress(progress)).map(|_| ())
+    }
+
+    pub(crate) fn set_restore_report_for_restore_operation(
+        &self,
+        operation: &RestoreOperation,
+        report: Option<CloudBackupRestoreReport>,
+    ) -> Result<(), CloudBackupError> {
+        operation.run(|| self.set_restore_report(report)).map(|_| ())
     }
 
     pub(crate) fn build_cloud_backup_detail_with_remote_truth(
@@ -853,7 +787,6 @@ impl RustCloudBackupManager {
             return;
         }
 
-        self.reset_wallet_upload_retry_count(&wallet_id);
         self.schedule_wallet_upload(wallet_id, false);
     }
 
@@ -881,101 +814,7 @@ impl RustCloudBackupManager {
     }
 
     fn schedule_wallet_upload(&self, wallet_id: WalletId, immediate: bool) {
-        if immediate {
-            self.spawn_wallet_upload(wallet_id);
-            return;
-        }
-
-        self.schedule_wallet_upload_after(wallet_id, LIVE_UPLOAD_DEBOUNCE);
-    }
-
-    fn schedule_wallet_upload_after(&self, wallet_id: WalletId, delay: Duration) {
-        let task = DebouncedTask::new("cloud_wallet_backup_upload", delay);
-        self.wallet_upload_debouncers.lock().insert(wallet_id.clone(), task.clone());
-
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        task.replace(async move {
-            this.spawn_wallet_upload(wallet_id);
-        });
-    }
-
-    fn next_wallet_upload_retry_delay(&self, wallet_id: &WalletId) -> Duration {
-        let mut retry_counts = self.wallet_upload_retry_counts.lock();
-        let retry_count = retry_counts.entry(wallet_id.clone()).or_default();
-        let delay = live_upload_retry_delay_for_attempt(*retry_count);
-        *retry_count = retry_count.saturating_add(1);
-        delay
-    }
-
-    fn reset_wallet_upload_retry_count(&self, wallet_id: &WalletId) {
-        self.wallet_upload_retry_counts.lock().remove(wallet_id);
-    }
-
-    fn spawn_wallet_upload(&self, wallet_id: WalletId) {
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || this.run_wallet_upload(wallet_id));
-    }
-
-    fn run_wallet_upload(&self, wallet_id: WalletId) {
-        {
-            let mut active_uploads = self.active_wallet_uploads.lock();
-            if !active_uploads.insert(wallet_id.clone()) {
-                return;
-            }
-        }
-
-        let upload_result = self.do_upload_wallet_if_dirty(&wallet_id);
-        if let Err(error) = &upload_result {
-            error!("Cloud backup upload failed for wallet_id={wallet_id}: {error}");
-            self.set_sync_error(Some(error.to_string()));
-        }
-
-        {
-            let mut active_uploads = self.active_wallet_uploads.lock();
-            active_uploads.remove(&wallet_id);
-        }
-
-        if upload_result.is_ok() {
-            self.reset_wallet_upload_retry_count(&wallet_id);
-            self.clear_sync_error_if_no_failed_wallet_uploads();
-        }
-
-        self.schedule_wallet_upload_follow_up(wallet_id);
-    }
-
-    fn resume_wallet_uploads_from_persisted_state(&self) {
-        let states = match Database::global().cloud_blob_sync_states.list() {
-            Ok(states) => states,
-            Err(error) => {
-                error!("Failed to load cloud blob sync states on startup: {error}");
-                return;
-            }
-        };
-
-        for sync_state in states {
-            let Some(wallet_id) = sync_state.wallet_id.clone() else {
-                continue;
-            };
-
-            match &sync_state.state {
-                PersistedCloudBlobState::Dirty(_) => {
-                    self.schedule_wallet_upload(wallet_id, true);
-                }
-                PersistedCloudBlobState::Failed(failed_state) if failed_state.retryable => {
-                    self.schedule_wallet_upload(wallet_id, true);
-                }
-                PersistedCloudBlobState::Uploading(_) => {
-                    if !self.downgrade_interrupted_upload_to_dirty(&sync_state) {
-                        continue;
-                    }
-
-                    self.schedule_wallet_upload(wallet_id, true);
-                }
-                PersistedCloudBlobState::UploadedPendingConfirmation(_)
-                | PersistedCloudBlobState::Confirmed(_) => {}
-                PersistedCloudBlobState::Failed(_) => {}
-            }
-        }
+        send!(self.runtime.schedule_wallet_upload(wallet_id, immediate));
     }
 
     fn downgrade_interrupted_upload_to_dirty(
@@ -998,15 +837,25 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn replace_pending_enable_session(&self, session: PendingEnableSession) {
-        *self.pending_enable_session.lock() = Some(session);
+        cove_tokio::task::block_on(call!(self.runtime.replace_pending_enable_session(session)))
+            .unwrap_or_else(|error| {
+                error!("Failed to cache pending enable session: {error}");
+            });
     }
 
     pub(crate) fn take_pending_enable_session(&self) -> Option<PendingEnableSession> {
-        self.pending_enable_session.lock().take()
+        cove_tokio::task::block_on(call!(self.runtime.take_pending_enable_session()))
+            .unwrap_or_else(|error| {
+                error!("Failed to take pending enable session: {error}");
+                None
+            })
     }
 
     pub(crate) fn clear_pending_enable_session(&self) {
-        self.pending_enable_session.lock().take();
+        cove_tokio::task::block_on(call!(self.runtime.clear_pending_enable_session()))
+            .unwrap_or_else(|error| {
+                error!("Failed to clear pending enable session: {error}");
+            });
     }
 
     pub(crate) fn replace_pending_verification_completion(
@@ -1014,7 +863,6 @@ impl RustCloudBackupManager {
         completion: PendingVerificationCompletion,
     ) {
         let persisted_completion = completion.persisted();
-        *self.pending_verification_completion.lock() = Some(completion);
 
         let mut state = Self::load_persisted_state();
         state.pending_verification_completion = Some(persisted_completion);
@@ -1022,29 +870,22 @@ impl RustCloudBackupManager {
             self.persist_cloud_backup_state(&state, "persist pending verification completion")
         {
             error!("Failed to persist pending verification completion: {error}");
+            return;
         }
+
+        send!(self.runtime.cache_pending_verification_completion(completion));
     }
 
     pub(crate) fn pending_verification_completion(&self) -> Option<PendingVerificationCompletion> {
-        if let Some(completion) = self.pending_verification_completion.lock().clone() {
-            return Some(completion);
-        }
-
-        let completion = Self::load_persisted_state()
+        Self::load_persisted_state()
             .pending_verification_completion
-            .map(PendingVerificationCompletion::from_persisted);
-        if let Some(completion) = &completion {
-            *self.pending_verification_completion.lock() = Some(completion.clone());
-        }
-
-        completion
+            .map(PendingVerificationCompletion::from_persisted)
     }
 
     pub(crate) fn clear_pending_verification_completion(&self) {
-        self.pending_verification_completion.lock().take();
-
         let mut state = Self::load_persisted_state();
         if state.pending_verification_completion.is_none() {
+            send!(self.runtime.clear_pending_verification_completion());
             return;
         }
 
@@ -1053,7 +894,10 @@ impl RustCloudBackupManager {
             self.persist_cloud_backup_state(&state, "clear pending verification completion")
         {
             error!("Failed to clear pending verification completion: {error}");
+            return;
         }
+
+        send!(self.runtime.clear_pending_verification_completion());
     }
 
     fn load_remote_wallet_truth(
@@ -1105,14 +949,12 @@ impl RustCloudBackupManager {
 
         Ok(remote_wallet_truth)
     }
-    fn start_background_operation<F>(
-        self: Arc<Self>,
+
+    pub(super) fn begin_background_operation(
+        &self,
         operation_name: &str,
         entering_status: Option<CloudBackupStatus>,
-        work: F,
-    ) where
-        F: FnOnce(Arc<Self>) -> Result<(), CloudBackupError> + Send + 'static,
-    {
+    ) -> bool {
         if let Some(status) = entering_status.clone() {
             let (
                 progress_changed,
@@ -1127,7 +969,7 @@ impl RustCloudBackupManager {
                     CloudBackupStatus::Enabling | CloudBackupStatus::Restoring
                 ) {
                     warn!("{operation_name} called while {current_status:?}, ignoring");
-                    return;
+                    return false;
                 }
 
                 let progress_changed = state.progress.take().is_some();
@@ -1159,19 +1001,17 @@ impl RustCloudBackupManager {
             let status = self.state.read().status.clone();
             if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
                 warn!("{operation_name} called while {status:?}, ignoring");
-                return;
+                return false;
             }
         }
 
-        let operation_name = operation_name.to_owned();
-        cove_tokio::task::spawn_blocking(move || {
-            if let Err(error) = work(self.clone()) {
-                error!("{operation_name} failed: {error}");
-                self.set_progress(None);
-                self.set_restore_progress(None);
-                self.set_status(Self::status_for_operation_error(&error));
-            }
-        });
+        true
+    }
+
+    pub(super) fn finish_background_operation_error(&self, error: &CloudBackupError) {
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_status(Self::status_for_operation_error(error));
     }
 }
 
@@ -1253,7 +1093,7 @@ impl RustCloudBackupManager {
     }
 
     pub fn has_pending_cloud_upload_verification(&self) -> bool {
-        if self.pending_verification_completion().is_some() {
+        if Self::load_persisted_state().pending_verification_completion.is_some() {
             return true;
         }
 
@@ -1262,7 +1102,7 @@ impl RustCloudBackupManager {
         })
     }
 
-    fn clear_sync_error_if_no_failed_wallet_uploads(&self) {
+    pub(super) fn clear_sync_error_if_no_failed_wallet_uploads(&self) {
         if self.has_failed_wallet_uploads() {
             return;
         }
@@ -1282,46 +1122,9 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn schedule_wallet_upload_follow_up(&self, wallet_id: WalletId) {
-        let record_id = wallet_record_id(wallet_id.as_ref());
-        let sync_state = match Database::global().cloud_blob_sync_states.get(&record_id) {
-            Ok(sync_state) => sync_state,
-            Err(error) => {
-                error!(
-                    "Failed to read wallet upload follow-up state for record_id={record_id}: {error}"
-                );
-                return;
-            }
-        };
-
-        let Some(sync_state) = sync_state else {
-            return;
-        };
-
-        if sync_state.is_dirty() {
-            self.reset_wallet_upload_retry_count(&wallet_id);
-            self.schedule_wallet_upload(wallet_id, true);
-            return;
-        }
-
-        match sync_state.state {
-            PersistedCloudBlobState::Failed(failed_state) if failed_state.retryable => {
-                let delay = self.next_wallet_upload_retry_delay(&wallet_id);
-                self.schedule_wallet_upload_after(wallet_id, delay);
-            }
-            PersistedCloudBlobState::Uploading(_)
-            | PersistedCloudBlobState::UploadedPendingConfirmation(_)
-            | PersistedCloudBlobState::Confirmed(_) => {}
-            PersistedCloudBlobState::Failed(_) => {
-                self.reset_wallet_upload_retry_count(&wallet_id);
-            }
-            PersistedCloudBlobState::Dirty(_) => unreachable!("dirty state handled above"),
-        }
-    }
-
     pub fn resume_pending_cloud_upload_verification(&self) {
         self.sync_persisted_state();
-        self.resume_wallet_uploads_from_persisted_state();
+        send!(self.runtime.resume_wallet_uploads_from_persisted_state());
         self.start_pending_upload_verification_loop();
     }
 
@@ -1357,6 +1160,10 @@ impl RustCloudBackupManager {
         self.set_cloud_only(CloudOnlyState::NotFetched);
         self.set_cloud_only_operation(CloudOnlyOperation::Idle);
         self.set_status(CloudBackupStatus::Disabled);
+        cove_tokio::task::block_on(call!(self.runtime.clear_upload_runtime_state()))
+            .unwrap_or_else(|error| {
+                error!("Failed to clear cloud backup runtime upload state: {error}");
+            });
         info!("Debug: reset cloud backup local state (including master key)");
     }
 
@@ -1379,76 +1186,31 @@ impl RustCloudBackupManager {
 
 impl RustCloudBackupManager {
     pub(crate) fn enable_cloud_backup(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup",
-            Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup(),
-        );
+        send!(self.runtime.start_operation(CloudBackupOperation::Enable, None));
     }
 
     pub(crate) fn enable_cloud_backup_force_new(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup_force_new",
-            Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup_force_new(),
-        );
+        send!(self.runtime.start_operation(CloudBackupOperation::EnableForceNew, None));
     }
 
     pub(crate) fn enable_cloud_backup_no_discovery(&self) {
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "enable_cloud_backup_no_discovery",
-            Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup_no_discovery(),
-        );
+        send!(self.runtime.start_operation(CloudBackupOperation::EnableNoDiscovery, None));
     }
 
     pub(crate) fn discard_pending_enable_cloud_backup(&self) {
-        if self.take_pending_enable_session().is_some() {
-            cove_cspp::Cspp::new(Keychain::global().clone()).delete_master_key();
-        }
+        cove_tokio::task::block_on(call!(self.runtime.discard_pending_enable_session()))
+            .unwrap_or_else(|error| {
+                error!("Failed to discard pending enable session: {error}");
+            });
     }
 
     pub(crate) fn cancel_restore(&self) {
-        let status = self.state.read().status.clone();
-        if !matches!(status, CloudBackupStatus::Restoring) {
-            return;
-        }
-
-        self.invalidate_restore_operation();
-        self.set_progress(None);
-        self.set_restore_progress(None);
-        self.set_restore_report(None);
-        self.set_status(Self::runtime_status_for(&Self::load_persisted_state()));
-        info!("restore_from_cloud_backup: cancelled active restore");
+        send!(self.runtime.cancel_restore());
     }
 
     pub(crate) fn restore_from_cloud_backup(&self) {
-        info!("restore_from_cloud_backup: spawning restore task");
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        {
-            let status = this.state.read().status.clone();
-            if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
-                warn!("restore_from_cloud_backup called while {status:?}, ignoring");
-                return;
-            }
-        }
-
-        let operation_id = this.next_restore_operation_id();
-        cove_tokio::task::spawn_blocking(move || {
-            info!("restore_from_cloud_backup: task started");
-            match this.do_restore_from_cloud_backup(operation_id) {
-                Ok(()) => {}
-                Err(CloudBackupError::Cancelled) => {
-                    info!("restore_from_cloud_backup: task cancelled");
-                }
-                Err(error) => {
-                    error!("restore_from_cloud_backup failed: {error}");
-                    this.set_progress(None);
-                    this.set_restore_progress(None);
-                    this.set_status(Self::status_for_operation_error(&error));
-                }
-            }
-        });
+        info!("restore_from_cloud_backup: enqueueing restore task");
+        send!(self.runtime.start_restore_from_cloud_backup());
     }
 }
 
@@ -1650,13 +1412,27 @@ pub(crate) fn ensure_cloud_backup_test_tokio_runtime() {
 #[cfg(test)]
 impl RustCloudBackupManager {
     pub(crate) fn run_wallet_upload_for_test(&self, wallet_id: WalletId) {
-        self.run_wallet_upload(wallet_id);
+        let runtime = self.runtime.clone();
+        std::thread::spawn(move || {
+            cove_tokio::task::block_on(call!(runtime.run_wallet_upload_inline_for_test(wallet_id)))
+                .expect("run wallet upload");
+        })
+        .join()
+        .expect("wallet upload test thread");
     }
 
     pub(crate) fn clear_wallet_upload_debouncers_for_test(&self) {
-        self.wallet_upload_debouncers.lock().clear();
-        self.wallet_upload_retry_counts.lock().clear();
-        self.active_wallet_uploads.lock().clear();
+        let runtime = self.runtime.clone();
+        std::thread::spawn(move || {
+            cove_tokio::task::block_on(call!(runtime.clear_upload_runtime_state()))
+                .expect("clear upload runtime state");
+        })
+        .join()
+        .expect("clear upload runtime state thread");
+    }
+
+    pub(crate) fn verify_pending_uploads_once_for_test(&self) -> bool {
+        self.verify_pending_uploads_once()
     }
 
     pub(crate) fn has_wallet_upload_debouncer_for_test(&self, wallet_id: WalletId) -> bool {
@@ -1677,6 +1453,21 @@ mod tests {
 
     fn test_lock() -> &'static parking_lot::Mutex<()> {
         super::cloud_backup_test_lock()
+    }
+
+    fn init_manager() -> Arc<RustCloudBackupManager> {
+        cove_tokio::init();
+        RustCloudBackupManager::init()
+    }
+
+    fn new_restore_operation(manager: &RustCloudBackupManager) -> RestoreOperation {
+        cove_tokio::task::block_on(call!(manager.runtime.new_restore_operation()))
+            .expect("create restore operation")
+    }
+
+    fn invalidate_restore_operation(manager: &RustCloudBackupManager) {
+        cove_tokio::task::block_on(call!(manager.runtime.invalidate_restore_operation()))
+            .expect("invalidate restore operation");
     }
 
     #[test]
@@ -1710,7 +1501,7 @@ mod tests {
     #[test]
     fn restore_progress_updates_state() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
+        let manager = init_manager();
         let progress = CloudBackupRestoreProgress {
             stage: CloudBackupRestoreStage::Downloading,
             completed: 1,
@@ -1790,7 +1581,7 @@ mod tests {
     #[test]
     fn restore_complete_clears_restore_progress() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
+        let manager = init_manager();
         manager.set_restore_progress(Some(CloudBackupRestoreProgress {
             stage: CloudBackupRestoreStage::Restoring,
             completed: 1,
@@ -1811,7 +1602,7 @@ mod tests {
     #[test]
     fn terminal_status_clears_restore_progress_and_keeps_report() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
+        let manager = init_manager();
         let report = CloudBackupRestoreReport {
             wallets_restored: 0,
             wallets_failed: 2,
@@ -1847,9 +1638,9 @@ mod tests {
     #[test]
     fn stale_restore_operation_cannot_update_restore_progress() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let stale_operation_id = manager.next_restore_operation_id();
-        let current_operation_id = manager.next_restore_operation_id();
+        let manager = init_manager();
+        let stale_operation = new_restore_operation(&manager);
+        let current_operation = new_restore_operation(&manager);
         let progress = CloudBackupRestoreProgress {
             stage: CloudBackupRestoreStage::Downloading,
             completed: 1,
@@ -1857,17 +1648,14 @@ mod tests {
         };
 
         let error = manager
-            .set_restore_progress_for_restore_operation(stale_operation_id, Some(progress.clone()))
+            .set_restore_progress_for_restore_operation(&stale_operation, Some(progress.clone()))
             .unwrap_err();
 
         assert!(matches!(error, CloudBackupError::Cancelled));
         assert_eq!(manager.state.read().restore_progress, None);
 
         manager
-            .set_restore_progress_for_restore_operation(
-                current_operation_id,
-                Some(progress.clone()),
-            )
+            .set_restore_progress_for_restore_operation(&current_operation, Some(progress.clone()))
             .unwrap();
 
         assert_eq!(manager.state.read().restore_progress, Some(progress));
@@ -1876,19 +1664,19 @@ mod tests {
     #[test]
     fn stale_restore_operation_cannot_update_status() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let stale_operation_id = manager.next_restore_operation_id();
-        let current_operation_id = manager.next_restore_operation_id();
+        let manager = init_manager();
+        let stale_operation = new_restore_operation(&manager);
+        let current_operation = new_restore_operation(&manager);
 
         let error = manager
-            .set_status_for_restore_operation(stale_operation_id, CloudBackupStatus::Restoring)
+            .set_status_for_restore_operation(&stale_operation, CloudBackupStatus::Restoring)
             .unwrap_err();
 
         assert!(matches!(error, CloudBackupError::Cancelled));
         assert_eq!(manager.state.read().status, CloudBackupStatus::Disabled);
 
         manager
-            .set_status_for_restore_operation(current_operation_id, CloudBackupStatus::Restoring)
+            .set_status_for_restore_operation(&current_operation, CloudBackupStatus::Restoring)
             .unwrap();
 
         assert_eq!(manager.state.read().status, CloudBackupStatus::Restoring);
@@ -1897,9 +1685,9 @@ mod tests {
     #[test]
     fn stale_restore_operation_cannot_update_restore_report() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let stale_operation_id = manager.next_restore_operation_id();
-        let current_operation_id = manager.next_restore_operation_id();
+        let manager = init_manager();
+        let stale_operation = new_restore_operation(&manager);
+        let current_operation = new_restore_operation(&manager);
         let report = CloudBackupRestoreReport {
             wallets_restored: 1,
             wallets_failed: 0,
@@ -1909,14 +1697,14 @@ mod tests {
         };
 
         let error = manager
-            .set_restore_report_for_restore_operation(stale_operation_id, Some(report.clone()))
+            .set_restore_report_for_restore_operation(&stale_operation, Some(report.clone()))
             .unwrap_err();
 
         assert!(matches!(error, CloudBackupError::Cancelled));
         assert_eq!(manager.state.read().restore_report, None);
 
         manager
-            .set_restore_report_for_restore_operation(current_operation_id, Some(report.clone()))
+            .set_restore_report_for_restore_operation(&current_operation, Some(report.clone()))
             .unwrap();
 
         assert_eq!(manager.state.read().restore_report, Some(report));
@@ -1925,13 +1713,13 @@ mod tests {
     #[test]
     fn stale_restore_operation_cannot_persist_cloud_backup_state() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
+        let manager = init_manager();
         let db = Database::global();
         db.cloud_backup_state.set(&PersistedCloudBackupState::default()).unwrap();
         manager.set_status(CloudBackupStatus::Disabled);
 
-        let stale_operation_id = manager.next_restore_operation_id();
-        let current_operation_id = manager.next_restore_operation_id();
+        let stale_operation = new_restore_operation(&manager);
+        let current_operation = new_restore_operation(&manager);
         let persisted_state = PersistedCloudBackupState {
             status: PersistedCloudBackupStatus::Enabled,
             ..PersistedCloudBackupState::default()
@@ -1939,7 +1727,7 @@ mod tests {
 
         let error = manager
             .persist_cloud_backup_state_for_restore_operation(
-                stale_operation_id,
+                &stale_operation,
                 &persisted_state,
                 "test stale restore persist",
             )
@@ -1951,7 +1739,7 @@ mod tests {
 
         manager
             .persist_cloud_backup_state_for_restore_operation(
-                current_operation_id,
+                &current_operation,
                 &persisted_state,
                 "test current restore persist",
             )
@@ -1964,25 +1752,25 @@ mod tests {
     #[test]
     fn invalidated_restore_operation_becomes_cancelled() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let operation_id = manager.next_restore_operation_id();
+        let manager = init_manager();
+        let operation = new_restore_operation(&manager);
 
-        manager.invalidate_restore_operation();
+        invalidate_restore_operation(&manager);
 
-        let error = manager.ensure_current_restore_operation(operation_id).unwrap_err();
+        let error = manager.ensure_current_restore_operation(&operation).unwrap_err();
         assert!(matches!(error, CloudBackupError::Cancelled));
     }
 
     #[test]
     fn stale_restore_operation_does_not_run_locked_update() {
         let _guard = test_lock().lock();
-        let manager = RustCloudBackupManager::init();
-        let stale_operation_id = manager.next_restore_operation_id();
-        manager.next_restore_operation_id();
+        let manager = init_manager();
+        let stale_operation = new_restore_operation(&manager);
+        let _current_operation = new_restore_operation(&manager);
         let mut ran = false;
 
-        let error = manager
-            .with_current_restore_operation_result(stale_operation_id, |_| {
+        let error = stale_operation
+            .run_result(|| {
                 ran = true;
                 Ok(())
             })
@@ -1995,17 +1783,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn start_background_operation_claims_enabling_synchronously() {
         let _guard = test_lock().lock();
-        cove_tokio::init();
-        let manager = RustCloudBackupManager::init();
+        let manager = init_manager();
         manager.set_status(CloudBackupStatus::Disabled);
         manager.set_progress(None);
         manager.set_restore_progress(None);
         manager.set_restore_report(None);
 
-        manager.clone().start_background_operation(
-            "first_enable",
-            Some(CloudBackupStatus::Enabling),
-            |_| Ok(()),
+        assert!(
+            manager.begin_background_operation("first_enable", Some(CloudBackupStatus::Enabling),)
         );
 
         assert_eq!(manager.state.read().status, CloudBackupStatus::Enabling);
