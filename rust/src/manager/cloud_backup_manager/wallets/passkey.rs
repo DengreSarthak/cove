@@ -1,0 +1,279 @@
+use cove_cspp::backup_data::EncryptedMasterKeyBackup;
+use cove_device::cloud_storage::CloudStorage;
+use cove_device::passkey::{PasskeyAccess, PasskeyError};
+use rand::RngExt as _;
+use tracing::{info, warn};
+
+use super::super::{CloudBackupError, PASSKEY_RP_ID};
+use super::UnpersistedPrfKey;
+
+trait PasskeyAccessExt {
+    fn create_new_prf_key(&self, log_message: &str) -> Result<UnpersistedPrfKey, CloudBackupError>;
+    fn create_new_prf_key_for_wrapper_repair(&self) -> Result<UnpersistedPrfKey, CloudBackupError>;
+}
+
+impl PasskeyAccessExt for PasskeyAccess {
+    fn create_new_prf_key(&self, log_message: &str) -> Result<UnpersistedPrfKey, CloudBackupError> {
+        info!("{log_message}");
+        let prf_salt: [u8; 32] = rand::rng().random();
+        let credential_id = self
+            .create_passkey(
+                PASSKEY_RP_ID.to_string(),
+                rand::rng().random::<[u8; 16]>().to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_enable_passkey_error)?;
+
+        let prf_output = self
+            .authenticate_with_prf(
+                PASSKEY_RP_ID.to_string(),
+                credential_id.clone(),
+                prf_salt.to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_enable_passkey_error)?;
+
+        Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+    }
+
+    fn create_new_prf_key_for_wrapper_repair(&self) -> Result<UnpersistedPrfKey, CloudBackupError> {
+        info!("Creating new passkey for wrapper repair");
+        let prf_salt: [u8; 32] = rand::rng().random();
+        let credential_id = self
+            .create_passkey(
+                PASSKEY_RP_ID.to_string(),
+                rand::rng().random::<[u8; 16]>().to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_wrapper_repair_passkey_error)?;
+
+        let prf_output = self
+            .authenticate_with_prf(
+                PASSKEY_RP_ID.to_string(),
+                credential_id.clone(),
+                prf_salt.to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_wrapper_repair_passkey_error)?;
+
+        Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+    }
+}
+
+pub struct NamespaceMatch {
+    pub namespace_id: String,
+    pub master_key: cove_cspp::master_key::MasterKey,
+    pub prf_salt: [u8; 32],
+    pub credential_id: Vec<u8>,
+}
+
+pub enum NamespaceMatchOutcome {
+    Matched(NamespaceMatch),
+    UserDeclined,
+    NoMatch,
+    Inconclusive,
+    UnsupportedVersions,
+}
+
+/// Create a passkey and authenticate with PRF without persisting to keychain
+///
+/// Used by the wrapper-repair path where we need to defer persistence until
+/// after the cloud upload succeeds
+pub fn create_prf_key_without_persisting(
+    passkey: &PasskeyAccess,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    passkey.create_new_prf_key_for_wrapper_repair()
+}
+
+/// Try to discover an existing passkey, fall back to creating a new one
+///
+/// Used by wrapper repair so keychain persistence still happens only after
+/// the repaired master-key wrapper upload succeeds
+pub fn discover_or_create_prf_key_without_persisting(
+    passkey: &PasskeyAccess,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    info!("Attempting passkey discovery before creating new wrapper-repair passkey");
+    let prf_salt: [u8; 32] = rand::rng().random();
+
+    match passkey.discover_and_authenticate_with_prf(
+        PASSKEY_RP_ID.to_string(),
+        prf_salt.to_vec(),
+        random_challenge(),
+    ) {
+        Ok(discovered) => {
+            let prf_key = prf_output_to_key(discovered.prf_output)?;
+            info!("Discovered existing passkey for wrapper repair");
+
+            Ok(UnpersistedPrfKey { prf_key, prf_salt, credential_id: discovered.credential_id })
+        }
+        Err(PasskeyError::UserCancelled) => {
+            info!("User cancelled passkey discovery for wrapper repair");
+            Err(CloudBackupError::PasskeyDiscoveryCancelled)
+        }
+        Err(PasskeyError::NoCredentialFound) => {
+            info!("No existing passkey found for wrapper repair, creating new");
+            create_prf_key_without_persisting(passkey)
+        }
+        Err(PasskeyError::PrfUnsupportedProvider) => {
+            Err(CloudBackupError::UnsupportedPasskeyProvider)
+        }
+        Err(error) => {
+            warn!("Wrapper-repair discovery failed ({error}), falling back to create");
+            create_prf_key_without_persisting(passkey)
+        }
+    }
+}
+
+/// Try to match the selected passkey against cloud namespaces
+pub fn try_match_namespace_with_passkey(
+    cloud: &CloudStorage,
+    passkey: &PasskeyAccess,
+    namespaces: &[String],
+) -> Result<NamespaceMatchOutcome, CloudBackupError> {
+    if namespaces.is_empty() {
+        return Ok(NamespaceMatchOutcome::NoMatch);
+    }
+
+    let mut downloaded: Vec<(String, EncryptedMasterKeyBackup)> =
+        Vec::with_capacity(namespaces.len());
+    let mut had_download_failures = false;
+    let mut had_unsupported_versions = false;
+
+    for namespace in namespaces {
+        let Ok(master_json) =
+            cloud.download_master_key_backup(namespace.clone()).inspect_err(|error| {
+                warn!("Failed to download master key for namespace {namespace}: {error}");
+                had_download_failures = true;
+            })
+        else {
+            continue;
+        };
+
+        let Ok(encrypted) = serde_json::from_slice::<EncryptedMasterKeyBackup>(&master_json)
+            .inspect_err(|error| {
+                warn!("Failed to deserialize master key for namespace {namespace}: {error}");
+                had_download_failures = true;
+            })
+        else {
+            continue;
+        };
+
+        if encrypted.version != 1 {
+            had_unsupported_versions = true;
+            continue;
+        }
+
+        downloaded.push((namespace.clone(), encrypted));
+    }
+
+    if downloaded.is_empty() && had_download_failures {
+        return Ok(NamespaceMatchOutcome::Inconclusive);
+    }
+
+    if downloaded.is_empty() && had_unsupported_versions {
+        return Ok(NamespaceMatchOutcome::UnsupportedVersions);
+    }
+
+    let (namespace_id, first_encrypted) = &downloaded[0];
+    let discovery = passkey.discover_and_authenticate_with_prf(
+        PASSKEY_RP_ID.to_string(),
+        first_encrypted.prf_salt.to_vec(),
+        random_challenge(),
+    );
+    let discovered = match discovery {
+        Ok(discovered) => discovered,
+        Err(PasskeyError::UserCancelled) => return Ok(NamespaceMatchOutcome::UserDeclined),
+        Err(PasskeyError::NoCredentialFound) => return Ok(NamespaceMatchOutcome::NoMatch),
+        Err(error) => return Err(CloudBackupError::Passkey(error.to_string())),
+    };
+
+    let prf_key = prf_output_to_key(discovered.prf_output.clone())?;
+    let try_first = cove_cspp::master_key_crypto::decrypt_master_key(first_encrypted, &prf_key);
+    if let Ok(master_key) = try_first {
+        return Ok(NamespaceMatchOutcome::Matched(NamespaceMatch {
+            namespace_id: namespace_id.clone(),
+            master_key,
+            prf_salt: first_encrypted.prf_salt,
+            credential_id: discovered.credential_id,
+        }));
+    }
+
+    for (namespace_id, encrypted) in downloaded.iter().skip(1) {
+        let prf_output = match passkey.authenticate_with_prf(
+            PASSKEY_RP_ID.to_string(),
+            discovered.credential_id.clone(),
+            encrypted.prf_salt.to_vec(),
+            random_challenge(),
+        ) {
+            Ok(prf_output) => prf_output,
+            Err(PasskeyError::UserCancelled) => return Ok(NamespaceMatchOutcome::UserDeclined),
+            Err(error) => {
+                warn!("Failed targeted passkey auth for namespace {namespace_id}: {error}");
+                had_download_failures = true;
+                continue;
+            }
+        };
+
+        let prf_key = prf_output_to_key(prf_output)?;
+        if let Ok(master_key) =
+            cove_cspp::master_key_crypto::decrypt_master_key(encrypted, &prf_key)
+        {
+            let matched = NamespaceMatch {
+                namespace_id: namespace_id.clone(),
+                master_key,
+                prf_salt: encrypted.prf_salt,
+                credential_id: discovered.credential_id.clone(),
+            };
+            return Ok(NamespaceMatchOutcome::Matched(matched));
+        }
+    }
+
+    if had_download_failures {
+        return Ok(NamespaceMatchOutcome::Inconclusive);
+    }
+
+    if downloaded.is_empty() && had_unsupported_versions {
+        return Ok(NamespaceMatchOutcome::UnsupportedVersions);
+    }
+
+    Ok(NamespaceMatchOutcome::NoMatch)
+}
+
+pub fn create_new_prf_key(
+    passkey: &PasskeyAccess,
+    log_message: &str,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    passkey.create_new_prf_key(log_message)
+}
+
+fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {
+    match error {
+        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
+        PasskeyError::UserCancelled => {
+            info!("User cancelled new passkey flow for wrapper repair");
+            CloudBackupError::PasskeyDiscoveryCancelled
+        }
+        other => CloudBackupError::Passkey(other.to_string()),
+    }
+}
+
+fn map_enable_passkey_error(error: PasskeyError) -> CloudBackupError {
+    match error {
+        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
+        PasskeyError::UserCancelled => {
+            info!("User cancelled new passkey flow for cloud backup enable");
+            CloudBackupError::PasskeyDiscoveryCancelled
+        }
+        other => CloudBackupError::Passkey(other.to_string()),
+    }
+}
+
+fn prf_output_to_key(prf_output: Vec<u8>) -> Result<[u8; 32], CloudBackupError> {
+    prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))
+}
+
+fn random_challenge() -> Vec<u8> {
+    rand::rng().random::<[u8; 32]>().to_vec()
+}

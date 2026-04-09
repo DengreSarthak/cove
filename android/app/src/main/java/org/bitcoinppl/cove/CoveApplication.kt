@@ -7,6 +7,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import org.bitcoinppl.cove_core.AuthType
+import org.bitcoinppl.cove_core.RustCloudBackupManager
 import org.bitcoinppl.cove_core.device.Device
 import org.bitcoinppl.cove_core.device.Keychain
 import org.bitcoinppl.cove_core.setRootDataDir
@@ -57,6 +58,9 @@ class CoveApplication : Application() {
         bootstrapCompleted = true
 
         AppManager.getInstance()
+        RustCloudBackupManager().use { rustCloudBackupManager ->
+            rustCloudBackupManager.resumePendingCloudUploadVerification()
+        }
         setupLifecycleObserver()
         setupMemoryCallbacks()
     }

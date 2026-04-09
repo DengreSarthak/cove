@@ -78,6 +78,7 @@ import org.bitcoinppl.cove.nfc.TapCardNfcManager
 import org.bitcoinppl.cove.sidebar.SidebarContainer
 import org.bitcoinppl.cove.ui.theme.CoveTheme
 import org.bitcoinppl.cove.views.LockView
+import org.bitcoinppl.cove_core.RustCloudBackupManager
 import org.bitcoinppl.cove.views.TermsAndConditionsSheet
 import org.bitcoinppl.cove_core.bootstrap
 import org.bitcoinppl.cove_core.activeMigration
@@ -97,6 +98,7 @@ import org.bitcoinppl.cove_core.NewWalletRoute
 import org.bitcoinppl.cove_core.NumberOfBip39Words
 import org.bitcoinppl.cove_core.Route
 import org.bitcoinppl.cove_core.RouteFactory
+import org.bitcoinppl.cove_core.SettingsRoute
 import org.bitcoinppl.cove_core.TapSignerRoute
 import org.bitcoinppl.cove_core.Wallet
 import org.bitcoinppl.cove_core.WalletType
@@ -538,12 +540,21 @@ private fun GlobalAlertDialog(
 
         is AppAlertState.HotWalletKeyMissing -> {
             val walletId = state.walletId
+            val cloudBackupEnabled =
+                runCatching { RustCloudBackupManager().use { it.isCloudBackupEnabled() } }
+                    .getOrDefault(false)
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(state.title()) },
                 text = { Text(state.message()) },
                 confirmButton = {
                     Column(horizontalAlignment = Alignment.End) {
+                        if (cloudBackupEnabled) {
+                            TextButton(onClick = {
+                                onDismiss()
+                                app.loadAndReset(Route.Settings(SettingsRoute.CloudBackup))
+                            }) { Text("Open Cloud Backup") }
+                        }
                         TextButton(onClick = {
                             onDismiss()
                             app.loadAndReset(Route.NewWallet(NewWalletRoute.HotWallet(HotWalletRoute.Import(NumberOfBip39Words.TWELVE, ImportType.MANUAL))))

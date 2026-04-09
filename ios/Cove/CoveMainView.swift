@@ -47,6 +47,13 @@ struct CoveMainView: View {
                 try? app.rust.selectWallet(id: walletId)
             }
         case let .hotWalletKeyMissing(walletId: walletId):
+            if CloudBackupManager.shared.isCloudBackupEnabled {
+                Button("Open Cloud Backup") {
+                    app.alertState = .none
+                    app.loadAndReset(to: .settings(.cloudBackup))
+                }
+            }
+
             Button("Import 12 Words") {
                 app.alertState = .none
                 app.loadAndReset(to: .newWallet(.hotWallet(.import(.twelve, .manual))))

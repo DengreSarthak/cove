@@ -1,9 +1,10 @@
+use act_zero::send;
 use tracing::error;
 
 use super::cloud_backup_manager::{
     CLOUD_BACKUP_MANAGER, CloudBackupError, CloudBackupManagerAction, CloudBackupReconcileMessage,
     CloudBackupWalletItem, DeepVerificationFailure, DeepVerificationReport, DeepVerificationResult,
-    RustCloudBackupManager,
+    RustCloudBackupManager, runtime_actor::CloudBackupOperation,
 };
 
 type Action = CloudBackupManagerAction;
@@ -51,6 +52,7 @@ pub enum CloudOnlyState {
 pub enum CloudOnlyOperation {
     Idle,
     Operating { record_id: String },
+    Warning { message: String, error: String },
     Failed { error: String },
 }
 
@@ -117,40 +119,43 @@ impl RustCloudBackupManager {
     }
 
     fn spawn_verification(self: std::sync::Arc<Self>, force_discoverable: bool) {
-        cove_tokio::task::spawn_blocking(move || {
-            self.handle_start_verification(force_discoverable)
-        });
+        let operation = CloudBackupOperation::Verification { force_discoverable };
+        send!(self.runtime.start_operation(operation, None));
     }
 
     fn spawn_recovery(self: std::sync::Arc<Self>, action: RecoveryAction) {
-        cove_tokio::task::spawn_blocking(move || self.handle_recovery(action));
+        let operation = CloudBackupOperation::Recovery { action };
+        send!(self.runtime.start_operation(operation, None));
     }
 
     fn spawn_repair_passkey(self: std::sync::Arc<Self>, no_discovery: bool) {
-        cove_tokio::task::spawn_blocking(move || self.handle_repair_passkey(no_discovery));
+        let operation = CloudBackupOperation::RepairPasskey { no_discovery };
+        send!(self.runtime.start_operation(operation, None));
     }
 
     fn spawn_sync(self: std::sync::Arc<Self>) {
-        cove_tokio::task::spawn_blocking(move || self.handle_sync());
+        send!(self.runtime.start_operation(CloudBackupOperation::Sync, None));
     }
 
     fn spawn_fetch_cloud_only(self: std::sync::Arc<Self>) {
-        cove_tokio::task::spawn_blocking(move || self.handle_fetch_cloud_only());
+        send!(self.runtime.start_operation(CloudBackupOperation::FetchCloudOnly, None));
     }
 
     fn spawn_restore_cloud_wallet(self: std::sync::Arc<Self>, record_id: String) {
-        cove_tokio::task::spawn_blocking(move || self.handle_restore_cloud_wallet(&record_id));
+        let operation = CloudBackupOperation::RestoreCloudWallet;
+        send!(self.runtime.start_operation(operation, Some(record_id)));
     }
 
     fn spawn_delete_cloud_wallet(self: std::sync::Arc<Self>, record_id: String) {
-        cove_tokio::task::spawn_blocking(move || self.handle_delete_cloud_wallet(&record_id));
+        let operation = CloudBackupOperation::DeleteCloudWallet;
+        send!(self.runtime.start_operation(operation, Some(record_id)));
     }
 
     fn spawn_refresh_detail(self: std::sync::Arc<Self>) {
-        cove_tokio::task::spawn_blocking(move || self.handle_refresh_detail());
+        send!(self.runtime.start_operation(CloudBackupOperation::RefreshDetail, None));
     }
 
-    fn handle_start_verification(&self, force_discoverable: bool) {
+    pub(crate) fn handle_start_verification(&self, force_discoverable: bool) {
         self.clear_pending_verification_completion();
         self.set_verification(VerificationState::Verifying);
 
@@ -194,7 +199,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_recovery(&self, action: RecoveryAction) {
+    pub(crate) fn handle_recovery(&self, action: RecoveryAction) {
         self.set_recovery(RecoveryState::Recovering(action.clone()));
 
         let result = match &action {
@@ -220,7 +225,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_repair_passkey(&self, no_discovery: bool) {
+    pub(crate) fn handle_repair_passkey(&self, no_discovery: bool) {
         self.set_recovery(RecoveryState::Recovering(RecoveryAction::RepairPasskey));
 
         let result = if no_discovery {
@@ -261,7 +266,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_sync(&self) {
+    pub(crate) fn handle_sync(&self) {
         self.set_sync(SyncState::Syncing);
 
         match self.do_sync_unsynced_wallets() {
@@ -275,7 +280,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_fetch_cloud_only(&self) {
+    pub(crate) fn handle_fetch_cloud_only(&self) {
         self.set_cloud_only(CloudOnlyState::Loading);
         self.set_cloud_only_operation(CloudOnlyOperation::Idle);
 
@@ -290,14 +295,24 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_restore_cloud_wallet(&self, record_id: &str) {
+    pub(crate) fn handle_restore_cloud_wallet(&self, record_id: &str) {
         self.set_cloud_only_operation(CloudOnlyOperation::Operating {
             record_id: record_id.to_string(),
         });
 
         match self.do_restore_cloud_wallet(record_id) {
-            Ok(()) => {
-                self.set_cloud_only_operation(CloudOnlyOperation::Idle);
+            Ok(outcome) => {
+                if let Some(warning) = outcome.labels_warning {
+                    self.set_cloud_only_operation(CloudOnlyOperation::Warning {
+                        message: format!(
+                            "{} was restored, but its labels could not be imported",
+                            warning.wallet_name
+                        ),
+                        error: warning.error,
+                    });
+                } else {
+                    self.set_cloud_only_operation(CloudOnlyOperation::Idle);
+                }
 
                 let mut cloud_only = self.state.read().cloud_only.clone();
                 if let CloudOnlyState::Loaded { wallets } = &mut cloud_only {
@@ -314,7 +329,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_delete_cloud_wallet(&self, record_id: &str) {
+    pub(crate) fn handle_delete_cloud_wallet(&self, record_id: &str) {
         self.set_cloud_only_operation(CloudOnlyOperation::Operating {
             record_id: record_id.to_string(),
         });
@@ -338,7 +353,7 @@ impl RustCloudBackupManager {
         }
     }
 
-    fn handle_refresh_detail(&self) {
+    pub(crate) fn handle_refresh_detail(&self) {
         if let Some(result) = self.refresh_cloud_backup_detail() {
             match result {
                 super::cloud_backup_manager::CloudBackupDetailResult::Success(detail) => {

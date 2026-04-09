@@ -274,6 +274,11 @@ private struct DeviceRestoreContent: View {
                 if report.walletsFailed > 0 {
                     warningCard(message: "\(report.walletsFailed) wallet(s) could not be restored")
                 }
+                if !report.labelsFailedWalletNames.isEmpty {
+                    warningCard(
+                        message: "\(report.labelsFailedWalletNames.count) restored wallet(s) had labels that could not be imported"
+                    )
+                }
 
                 Button(action: onDone) {
                     Text("Done")
@@ -334,7 +339,9 @@ private struct DeviceRestoreContent: View {
             CloudBackupRestoreReport(
                 walletsRestored: 4,
                 walletsFailed: 0,
-                failedWalletErrors: []
+                failedWalletErrors: [],
+                labelsFailedWalletNames: [],
+                labelsFailedErrors: []
             )
         ),
         combinedProgress: 1,
@@ -349,7 +356,9 @@ private struct DeviceRestoreContent: View {
             CloudBackupRestoreReport(
                 walletsRestored: 3,
                 walletsFailed: 1,
-                failedWalletErrors: ["Wallet 4 failed to restore"]
+                failedWalletErrors: ["Wallet 4 failed to restore"],
+                labelsFailedWalletNames: ["Wallet 2"],
+                labelsFailedErrors: ["Failed to parse labels: invalid type"]
             )
         ),
         combinedProgress: 1,

@@ -135,7 +135,7 @@ impl RustImportWalletManager {
 
             Wallet::try_new_persisted_and_selected(wallet_metadata.clone(), mnemonic.clone(), None)
                 .map_err_str(ImportWalletError::WalletImportError)?;
-            CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+            CLOUD_BACKUP_MANAGER.handle_wallet_set_change();
 
             return Ok(wallet_metadata);
         }
@@ -180,7 +180,7 @@ impl RustImportWalletManager {
         Database::global().wallets.update_wallet_metadata(metadata.clone())?;
         Database::global().global_config.select_wallet(id.clone())?;
         Updater::send_update(Update::ClearCachedWalletManager(id));
-        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+        CLOUD_BACKUP_MANAGER.handle_wallet_backup_change_and_reverify(metadata.id.clone());
 
         Ok(metadata)
     }

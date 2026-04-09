@@ -111,7 +111,7 @@ impl AppAlertState {
                 "This wallet has already been imported! Taking you there now...".to_string()
             }
             Self::HotWalletKeyMissing { .. } => {
-                let base = "This wallet's private key is no longer available on this device. It has been converted to watch-only. To restore full access, import your seed words.";
+                let base = "This wallet's private key is no longer available on this device. It has been converted to watch-only. To restore full access, recover it from Cloud Backup or import your seed words.";
 
                 cfg_if::cfg_if! {
                     if #[cfg(target_os = "ios")] {

@@ -1,31 +1,22 @@
-use std::str::FromStr as _;
+mod passkey;
+mod payload;
+mod restore;
+mod upload;
 
-use cove_cspp::backup_data::{
-    DescriptorPair, EncryptedWalletBackup, WalletEntry, WalletMode,
-    WalletSecret as CloudWalletSecret, wallet_record_id,
-};
-use cove_cspp::master_key_crypto;
-use cove_cspp::wallet_crypto;
-use cove_device::cloud_storage::CloudStorage;
-use cove_device::keychain::Keychain;
-use cove_device::passkey::{PasskeyAccess, PasskeyError};
-use cove_types::{WalletId, network::Network};
+use cove_cspp::backup_data::WalletEntry;
+use cove_types::network::Network;
 use cove_util::ResultExt as _;
-use rand::RngExt as _;
 use strum::IntoEnumIterator as _;
-use tracing::{info, warn};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
-use super::{
-    CloudBackupError, LocalDescriptorPair, LocalWalletMode, LocalWalletSecret, PASSKEY_RP_ID,
-    RustCloudBackupManager,
-};
+use super::{CloudBackupError, LocalWalletMode};
 use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
-use crate::wallet::metadata::{WalletMetadata, WalletType};
+use crate::wallet::metadata::WalletMetadata;
 
 const UPLOAD_WALLET_RECOVERY_MESSAGE: &str =
     "Cloud backup needs verification before wallets can be uploaded";
+const MAX_CLOUD_LABELS_SIZE: usize = 10 * 1024 * 1024;
 
 #[derive(Zeroize)]
 pub(super) struct UnpersistedPrfKey {
@@ -39,291 +30,33 @@ pub(super) struct DownloadedWalletBackup {
     pub(super) entry: WalletEntry,
 }
 
-impl RustCloudBackupManager {
-    /// Upload wallets to cloud and update local cache
-    pub(super) fn do_backup_wallets(
-        &self,
-        wallets: &[crate::wallet::metadata::WalletMetadata],
-    ) -> Result<(), CloudBackupError> {
-        if wallets.is_empty() {
-            return Ok(());
-        }
-
-        let namespace = self.current_namespace_id()?;
-        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
-        let master_key = match cspp
-            .load_master_key_from_store()
-            .map_err_prefix("load local master key", CloudBackupError::Internal)?
-        {
-            Some(master_key) => master_key,
-            None => self.recover_local_master_key_from_cloud_without_discovery(
-                &namespace,
-                UPLOAD_WALLET_RECOVERY_MESSAGE,
-            )?,
-        };
-
-        let critical_key = Zeroizing::new(master_key.critical_data_key());
-        let cloud = CloudStorage::global();
-        let mut uploaded_record_ids = Vec::with_capacity(wallets.len());
-
-        for (index, metadata) in wallets.iter().enumerate() {
-            info!("Backup: uploading wallet {}/{} '{}'", index + 1, wallets.len(), metadata.name);
-            let entry = build_wallet_entry(metadata, metadata.wallet_mode)?;
-            let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, &critical_key)
-                .map_err_str(CloudBackupError::Crypto)?;
-
-            let record_id = wallet_record_id(metadata.id.as_ref());
-            let wallet_json =
-                serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
-
-            cloud
-                .upload_wallet_backup(namespace.clone(), record_id.clone(), wallet_json)
-                .map_err_str(CloudBackupError::Cloud)?;
-            uploaded_record_ids.push(record_id);
-            info!("Backup: wallet {}/{} uploaded", index + 1, wallets.len());
-        }
-
-        let db = Database::global();
-        self.enqueue_pending_uploads(&namespace, uploaded_record_ids)?;
-
-        let previous_count =
-            db.cloud_backup_state.get().ok().and_then(|state| state.wallet_count).unwrap_or(0);
-        let wallet_count = previous_count + wallets.len() as u32;
-        persist_enabled_cloud_backup_state(&db, wallet_count)?;
-
-        info!("Backed up {} wallet(s) to cloud", wallets.len());
-        Ok(())
-    }
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteWalletBackupSummary {
+    pub(crate) revision_hash: String,
+    pub(crate) label_count: u32,
+    pub(crate) updated_at: u64,
 }
 
-/// Create a passkey and authenticate with PRF without persisting to keychain
-///
-/// Used by the wrapper-repair path where we need to defer persistence until
-/// after the cloud upload succeeds
-pub(super) fn create_prf_key_without_persisting(
-    passkey: &PasskeyAccess,
-) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    create_new_prf_key_for_wrapper_repair(passkey)
+pub(crate) struct PreparedWalletBackup {
+    pub(crate) metadata: WalletMetadata,
+    pub(crate) record_id: String,
+    pub(crate) revision_hash: String,
+    pub(crate) entry: WalletEntry,
 }
 
-/// Try to discover an existing passkey, fall back to creating a new one
-///
-/// Used by wrapper repair so keychain persistence still happens only after
-/// the repaired master-key wrapper upload succeeds
-pub(super) fn discover_or_create_prf_key_without_persisting(
-    passkey: &PasskeyAccess,
-) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("Attempting passkey discovery before creating new wrapper-repair passkey");
-    let prf_salt: [u8; 32] = rand::rng().random();
-
-    match passkey.discover_and_authenticate_with_prf(
-        PASSKEY_RP_ID.to_string(),
-        prf_salt.to_vec(),
-        random_challenge(),
-    ) {
-        Ok(discovered) => {
-            let prf_key = prf_output_to_key(discovered.prf_output)?;
-            info!("Discovered existing passkey for wrapper repair");
-
-            Ok(UnpersistedPrfKey { prf_key, prf_salt, credential_id: discovered.credential_id })
-        }
-        Err(cove_device::passkey::PasskeyError::UserCancelled) => {
-            info!("User cancelled passkey discovery for wrapper repair");
-            Err(CloudBackupError::PasskeyDiscoveryCancelled)
-        }
-        Err(cove_device::passkey::PasskeyError::NoCredentialFound) => {
-            info!("No existing passkey found for wrapper repair, creating new");
-            create_prf_key_without_persisting(passkey)
-        }
-        Err(error) => {
-            warn!("Wrapper-repair discovery failed ({error}), falling back to create");
-            create_prf_key_without_persisting(passkey)
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub(super) struct NamespaceMatch {
-    pub(super) namespace_id: String,
-    pub(super) master_key: cove_cspp::master_key::MasterKey,
-    pub(super) prf_key: [u8; 32],
-    pub(super) prf_salt: [u8; 32],
-    pub(super) credential_id: Vec<u8>,
-}
-
-pub(super) enum NamespaceMatchOutcome {
-    /// User's passkey decrypted a namespace's master key
-    Matched(NamespaceMatch),
-    /// User cancelled the picker or biometric, or no credentials on device
-    UserDeclined,
-    /// The selected passkey didn't match any downloaded v1 backup
-    NoMatch,
-    /// Some namespaces couldn't be downloaded — result is inconclusive
-    Inconclusive,
-    /// Some/all namespaces had unsupported version — app may be too old
-    UnsupportedVersions,
-}
-
-/// Try to match the selected passkey against cloud namespaces
-///
-/// Downloads all encrypted master keys, then does a discovery auth with the first
-/// v1 backup's salt. If that passkey doesn't match, targeted auth reuses the same
-/// selected credential across the remaining namespaces with each namespace's own
-/// salt. Returns `NoMatch` when that selected passkey doesn't match any downloaded
-/// namespace
-pub(super) fn try_match_namespace_with_passkey(
-    cloud: &CloudStorage,
-    passkey: &PasskeyAccess,
-    namespaces: &[String],
-) -> Result<NamespaceMatchOutcome, CloudBackupError> {
-    if namespaces.is_empty() {
-        return Ok(NamespaceMatchOutcome::NoMatch);
-    }
-
-    // download all encrypted master key backups
-    let mut downloaded: Vec<(String, cove_cspp::backup_data::EncryptedMasterKeyBackup)> =
-        Vec::with_capacity(namespaces.len());
-    let mut had_download_failures = false;
-    let mut had_unsupported_versions = false;
-
-    for ns in namespaces {
-        let master_json = match cloud.download_master_key_backup(ns.clone()) {
-            Ok(json) => json,
-            Err(error) => {
-                warn!("Failed to download master key for namespace {ns}: {error}");
-                had_download_failures = true;
-                continue;
-            }
-        };
-
-        let encrypted: cove_cspp::backup_data::EncryptedMasterKeyBackup =
-            match serde_json::from_slice(&master_json) {
-                Ok(e) => e,
-                Err(error) => {
-                    warn!("Failed to deserialize master key for namespace {ns}: {error}");
-                    had_download_failures = true;
-                    continue;
-                }
-            };
-
-        if encrypted.version != 1 {
-            had_unsupported_versions = true;
-            continue;
-        }
-
-        downloaded.push((ns.clone(), encrypted));
-    }
-
-    if downloaded.is_empty() {
-        if had_download_failures {
-            return Ok(NamespaceMatchOutcome::Inconclusive);
-        }
-
-        return Ok(NamespaceMatchOutcome::UnsupportedVersions);
-    }
-
-    // discovery auth with first downloaded backup's salt
-    let first_prf_salt = downloaded[0].1.prf_salt;
-
-    let discovered = match passkey.discover_and_authenticate_with_prf(
-        PASSKEY_RP_ID.to_string(),
-        first_prf_salt.to_vec(),
-        random_challenge(),
-    ) {
-        Ok(result) => result,
-        Err(cove_device::passkey::PasskeyError::UserCancelled)
-        | Err(cove_device::passkey::PasskeyError::NoCredentialFound) => {
-            return Ok(NamespaceMatchOutcome::UserDeclined);
-        }
-        Err(error) => return Err(CloudBackupError::Passkey(error.to_string())),
-    };
-
-    let prf_key = prf_output_to_key(discovered.prf_output)?;
-
-    // try first backup
-    if let Ok(master_key) = master_key_crypto::decrypt_master_key(&downloaded[0].1, &prf_key) {
-        return Ok(NamespaceMatchOutcome::Matched(NamespaceMatch {
-            namespace_id: downloaded[0].0.clone(),
-            master_key,
-            prf_key,
-            prf_salt: first_prf_salt,
-            credential_id: discovered.credential_id,
-        }));
-    }
-
-    // try remaining with targeted auth using each namespace's own salt
-    for (namespace, encrypted) in &downloaded[1..] {
-        let namespace_prf_output = match passkey.authenticate_with_prf(
-            PASSKEY_RP_ID.to_string(),
-            discovered.credential_id.clone(),
-            encrypted.prf_salt.to_vec(),
-            random_challenge(),
-        ) {
-            Ok(output) => output,
-            Err(cove_device::passkey::PasskeyError::UserCancelled) => {
-                return Ok(NamespaceMatchOutcome::UserDeclined);
-            }
-            Err(error) => {
-                warn!("Targeted auth failed for namespace {namespace}: {error}");
-                continue;
-            }
-        };
-
-        let namespace_prf_key = match prf_output_to_key(namespace_prf_output) {
-            Ok(key) => key,
-            Err(_) => continue,
-        };
-
-        if let Ok(master_key) = master_key_crypto::decrypt_master_key(encrypted, &namespace_prf_key)
-        {
-            return Ok(NamespaceMatchOutcome::Matched(NamespaceMatch {
-                namespace_id: namespace.clone(),
-                master_key,
-                prf_key: namespace_prf_key,
-                prf_salt: encrypted.prf_salt,
-                credential_id: discovered.credential_id.clone(),
-            }));
-        }
-    }
-
-    // none matched
-    if had_download_failures {
-        return Ok(NamespaceMatchOutcome::Inconclusive);
-    }
-
-    if had_unsupported_versions {
-        return Ok(NamespaceMatchOutcome::UnsupportedVersions);
-    }
-
-    Ok(NamespaceMatchOutcome::NoMatch)
-}
-
-/// Encrypt and hand off all local wallets to the given namespace
-pub(super) fn upload_all_wallets(
-    cloud: &CloudStorage,
-    namespace: &str,
-    critical_key: &[u8; 32],
-    db: &Database,
-) -> Result<Vec<String>, CloudBackupError> {
-    let mut uploaded_record_ids = Vec::new();
-
-    for metadata in all_local_wallets(db)? {
-        let entry = build_wallet_entry(&metadata, metadata.wallet_mode)?;
-        let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, critical_key)
-            .map_err_str(CloudBackupError::Crypto)?;
-
-        let record_id = wallet_record_id(metadata.id.as_ref());
-        let wallet_json = serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
-
-        cloud
-            .upload_wallet_backup(namespace.to_string(), record_id.clone(), wallet_json)
-            .map_err_str(CloudBackupError::Cloud)?;
-
-        uploaded_record_ids.push(record_id);
-    }
-
-    Ok(uploaded_record_ids)
-}
+pub(crate) use passkey::{
+    NamespaceMatch, NamespaceMatchOutcome, create_new_prf_key, create_prf_key_without_persisting,
+    discover_or_create_prf_key_without_persisting, try_match_namespace_with_passkey,
+};
+#[cfg(test)]
+pub(crate) use payload::convert_cloud_secret;
+pub(crate) use payload::{
+    decode_cloud_labels_jsonl, prepare_wallet_backup, wallet_metadata_change_requires_upload,
+};
+pub(crate) use restore::{
+    WalletBackupLookup, WalletBackupReader, WalletRestoreOutcome, WalletRestoreSession,
+};
+pub(crate) use upload::upload_all_wallets;
 
 pub(super) fn persist_enabled_cloud_backup_state(
     db: &Database,
@@ -340,15 +73,15 @@ pub(super) fn persist_enabled_cloud_backup_state_reset_verification(
     db: &Database,
     wallet_count: u32,
 ) -> Result<(), CloudBackupError> {
-    let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
     db.cloud_backup_state
         .set(&PersistedCloudBackupState {
-            status: PersistedCloudBackupStatus::Enabled,
-            last_sync: Some(now),
+            status: PersistedCloudBackupStatus::Unverified,
+            last_sync: Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0)),
             wallet_count: Some(wallet_count),
             last_verified_at: None,
             last_verification_requested_at: None,
             last_verification_dismissed_at: None,
+            pending_verification_completion: None,
         })
         .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)
 }
@@ -374,11 +107,11 @@ fn persist_enabled_cloud_backup_state_with_last_verified_at(
             last_verified_at,
             last_verification_requested_at: current.last_verification_requested_at,
             last_verification_dismissed_at: current.last_verification_dismissed_at,
+            pending_verification_completion: current.pending_verification_completion,
         })
         .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)
 }
 
-/// All local wallets across every network and mode
 pub(super) fn all_local_wallets(db: &Database) -> Result<Vec<WalletMetadata>, CloudBackupError> {
     all_local_wallets_from(|network, mode| {
         db.wallets.get_all(network, mode).map_err(|error| {
@@ -406,320 +139,10 @@ pub(super) fn count_all_wallets(db: &Database) -> Result<u32, CloudBackupError> 
     Ok(all_local_wallets(db)?.len() as u32)
 }
 
-pub(super) fn restore_single_wallet(
-    cloud: &CloudStorage,
-    namespace: &str,
-    record_id: &str,
-    critical_key: &[u8; 32],
-    existing_fingerprints: &mut Vec<(
-        crate::wallet::fingerprint::Fingerprint,
-        Network,
-        LocalWalletMode,
-    )>,
-) -> Result<(), CloudBackupError> {
-    let wallet = download_wallet_backup(cloud, namespace, record_id, critical_key)?;
-    restore_downloaded_wallet_for_restore(&wallet, existing_fingerprints)
-}
-
-pub(super) fn restore_downloaded_wallet_for_restore(
-    wallet: &DownloadedWalletBackup,
-    existing_fingerprints: &mut Vec<(
-        crate::wallet::fingerprint::Fingerprint,
-        Network,
-        LocalWalletMode,
-    )>,
-) -> Result<(), CloudBackupError> {
-    if should_skip_duplicate_wallet(&wallet.metadata, existing_fingerprints) {
-        return Ok(());
-    }
-
-    restore_downloaded_wallet(&wallet.metadata, &wallet.entry)?;
-    remember_restored_wallet_fingerprint(&wallet.metadata, existing_fingerprints);
-
-    Ok(())
-}
-
-pub(super) fn download_wallet_backup(
-    cloud: &CloudStorage,
-    namespace: &str,
-    record_id: &str,
-    critical_key: &[u8; 32],
-) -> Result<DownloadedWalletBackup, CloudBackupError> {
-    let wallet_json = cloud
-        .download_wallet_backup(namespace.to_string(), record_id.to_string())
-        .map_err(|e| CloudBackupError::Cloud(format!("download {record_id}: {e}")))?;
-
-    let encrypted: EncryptedWalletBackup = serde_json::from_slice(&wallet_json)
-        .map_err_prefix("deserialize wallet", CloudBackupError::Internal)?;
-
-    if encrypted.version != 1 {
-        let version = encrypted.version;
-        return Err(CloudBackupError::Internal(format!(
-            "unsupported wallet backup version: {version}",
-        )));
-    }
-
-    let entry = wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key)
-        .map_err_prefix("decrypt wallet", CloudBackupError::Crypto)?;
-
-    let metadata = serde_json::from_value(entry.metadata.clone())
-        .map_err_prefix("parse wallet metadata", CloudBackupError::Internal)?;
-
-    Ok(DownloadedWalletBackup { metadata, entry })
-}
-
-pub(super) fn create_new_prf_key(
-    passkey: &PasskeyAccess,
-    log_message: &str,
-) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("{log_message}");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let credential_id = passkey
-        .create_passkey(
-            PASSKEY_RP_ID.to_string(),
-            rand::rng().random::<[u8; 16]>().to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_enable_passkey_error)?;
-
-    let prf_output = passkey
-        .authenticate_with_prf(
-            PASSKEY_RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_enable_passkey_error)?;
-
-    Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
-}
-
-fn create_new_prf_key_for_wrapper_repair(
-    passkey: &PasskeyAccess,
-) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("Creating new passkey for wrapper repair");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let credential_id = passkey
-        .create_passkey(
-            PASSKEY_RP_ID.to_string(),
-            rand::rng().random::<[u8; 16]>().to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_wrapper_repair_passkey_error)?;
-
-    let prf_output = passkey
-        .authenticate_with_prf(
-            PASSKEY_RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_wrapper_repair_passkey_error)?;
-
-    Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
-}
-
-fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {
-    match error {
-        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
-        PasskeyError::UserCancelled => {
-            info!("User cancelled new passkey flow for wrapper repair");
-            CloudBackupError::PasskeyDiscoveryCancelled
-        }
-        other => CloudBackupError::Passkey(other.to_string()),
-    }
-}
-
-fn map_enable_passkey_error(error: PasskeyError) -> CloudBackupError {
-    match error {
-        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
-        PasskeyError::UserCancelled => {
-            info!("User cancelled new passkey flow for cloud backup enable");
-            CloudBackupError::PasskeyDiscoveryCancelled
-        }
-        other => CloudBackupError::Passkey(other.to_string()),
-    }
-}
-
-fn prf_output_to_key(prf_output: Vec<u8>) -> Result<[u8; 32], CloudBackupError> {
-    prf_output
-        .try_into()
-        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))
-}
-
-fn random_challenge() -> Vec<u8> {
-    rand::rng().random::<[u8; 32]>().to_vec()
-}
-
-fn should_skip_duplicate_wallet(
-    metadata: &WalletMetadata,
-    existing_fingerprints: &[(crate::wallet::fingerprint::Fingerprint, Network, LocalWalletMode)],
-) -> bool {
-    if crate::backup::import::is_wallet_duplicate(metadata, existing_fingerprints)
-        .inspect_err(|e| warn!("is_wallet_duplicate check failed for {}: {e}", metadata.name))
-        .unwrap_or(false)
-    {
-        info!("Skipping duplicate wallet {}", metadata.name);
-        true
-    } else {
-        false
-    }
-}
-
-fn restore_downloaded_wallet(
-    metadata: &WalletMetadata,
-    entry: &WalletEntry,
-) -> Result<(), CloudBackupError> {
-    let backup_model = crate::backup::model::WalletBackup {
-        metadata: entry.metadata.clone(),
-        secret: convert_cloud_secret(&entry.secret),
-        descriptors: entry.descriptors.as_ref().map(|descriptors| LocalDescriptorPair {
-            external: descriptors.external.clone(),
-            internal: descriptors.internal.clone(),
-        }),
-        xpub: entry.xpub.clone(),
-        labels_jsonl: None,
-    };
-
-    match &backup_model.secret {
-        LocalWalletSecret::Mnemonic(words) => {
-            let mnemonic = bip39::Mnemonic::from_str(words)
-                .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
-
-            crate::backup::import::restore_cloud_mnemonic_wallet(metadata, mnemonic).map_err(
-                |(error, _)| {
-                    CloudBackupError::Internal(format!("restore mnemonic wallet: {error}"))
-                },
-            )?;
-        }
-        _ => {
-            crate::backup::import::restore_cloud_descriptor_wallet(metadata, &backup_model)
-                .map_err(|(error, _)| {
-                    CloudBackupError::Internal(format!("restore descriptor wallet: {error}"))
-                })?;
-        }
-    }
-
-    Ok(())
-}
-
-fn remember_restored_wallet_fingerprint(
-    metadata: &WalletMetadata,
-    existing_fingerprints: &mut Vec<(
-        crate::wallet::fingerprint::Fingerprint,
-        Network,
-        LocalWalletMode,
-    )>,
-) {
-    if let Some(fingerprint) = &metadata.master_fingerprint {
-        existing_fingerprints.push((**fingerprint, metadata.network, metadata.wallet_mode));
-    }
-}
-
-pub(super) fn convert_cloud_secret(secret: &CloudWalletSecret) -> LocalWalletSecret {
-    match secret {
-        CloudWalletSecret::Mnemonic(mnemonic) => LocalWalletSecret::Mnemonic(mnemonic.clone()),
-        CloudWalletSecret::TapSignerBackup(backup) => {
-            LocalWalletSecret::TapSignerBackup(backup.clone())
-        }
-        CloudWalletSecret::Descriptor(_) | CloudWalletSecret::WatchOnly => LocalWalletSecret::None,
-    }
-}
-
-pub(super) fn build_wallet_entry(
-    metadata: &crate::wallet::metadata::WalletMetadata,
-    mode: LocalWalletMode,
-) -> Result<WalletEntry, CloudBackupError> {
-    let keychain = Keychain::global();
-    let id = &metadata.id;
-    let name = &metadata.name;
-
-    let secret = match metadata.wallet_type {
-        WalletType::Hot => match keychain.get_wallet_key(id) {
-            Ok(Some(mnemonic)) => CloudWalletSecret::Mnemonic(mnemonic.to_string()),
-            Ok(None) => {
-                return Err(CloudBackupError::Internal(format!(
-                    "hot wallet '{name}' has no mnemonic"
-                )));
-            }
-            Err(error) => {
-                return Err(CloudBackupError::Internal(format!(
-                    "failed to get mnemonic for '{name}': {error}"
-                )));
-            }
-        },
-        WalletType::Cold => build_cold_wallet_secret(keychain, metadata, id, name)?,
-        WalletType::XpubOnly | WalletType::WatchOnly => CloudWalletSecret::WatchOnly,
-    };
-
-    let xpub = match keychain.get_wallet_xpub(id) {
-        Ok(Some(xpub)) => Some(xpub.to_string()),
-        Ok(None) => None,
-        Err(error) => {
-            return Err(CloudBackupError::Internal(format!(
-                "failed to read xpub for '{name}': {error}"
-            )));
-        }
-    };
-
-    let descriptors = match keychain.get_public_descriptor(id) {
-        Ok(Some((external, internal))) => {
-            Some(DescriptorPair { external: external.to_string(), internal: internal.to_string() })
-        }
-        Ok(None) => None,
-        Err(error) => {
-            return Err(CloudBackupError::Internal(format!(
-                "failed to read descriptors for '{name}': {error}"
-            )));
-        }
-    };
-
-    let metadata_value = serde_json::to_value(metadata)
-        .map_err_prefix("serialize metadata", CloudBackupError::Internal)?;
-
-    let wallet_mode = match mode {
-        LocalWalletMode::Main => WalletMode::Main,
-        LocalWalletMode::Decoy => WalletMode::Decoy,
-    };
-
-    Ok(WalletEntry {
-        wallet_id: id.to_string(),
-        secret,
-        metadata: metadata_value,
-        descriptors,
-        xpub,
-        wallet_mode,
-    })
-}
-
-fn build_cold_wallet_secret(
-    keychain: &Keychain,
-    metadata: &WalletMetadata,
-    id: &WalletId,
-    name: &str,
-) -> Result<CloudWalletSecret, CloudBackupError> {
-    let is_tap_signer =
-        metadata.hardware_metadata.as_ref().is_some_and(|hardware| hardware.is_tap_signer());
-
-    if !is_tap_signer {
-        return Ok(CloudWalletSecret::WatchOnly);
-    }
-
-    match keychain.get_tap_signer_backup(id) {
-        Ok(Some(backup)) => Ok(CloudWalletSecret::TapSignerBackup(backup)),
-        Ok(None) => {
-            warn!("Tap signer wallet '{name}' has no backup, exporting without it");
-            Ok(CloudWalletSecret::WatchOnly)
-        }
-        Err(error) => Err(CloudBackupError::Internal(format!(
-            "failed to read tap signer backup for '{name}': {error}"
-        ))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::cloud_backup::PersistedCloudBackupStatus;
 
     #[test]
     fn all_local_wallets_from_returns_error_when_any_bucket_fails() {
@@ -737,5 +160,34 @@ mod tests {
         assert!(
             matches!(error, CloudBackupError::Internal(message) if message == "read wallets for test bucket failed")
         );
+    }
+
+    #[test]
+    fn reset_verification_does_not_preserve_passkey_missing() {
+        let _guard = crate::manager::cloud_backup_manager::cloud_backup_test_lock().lock();
+        let db = Database::global();
+        let _ = db.cloud_backup_state.delete();
+        db.cloud_backup_state
+            .set(&PersistedCloudBackupState {
+                status: PersistedCloudBackupStatus::PasskeyMissing,
+                last_sync: Some(10),
+                wallet_count: Some(2),
+                last_verified_at: Some(11),
+                last_verification_requested_at: Some(12),
+                last_verification_dismissed_at: Some(13),
+                pending_verification_completion: None,
+            })
+            .unwrap();
+
+        persist_enabled_cloud_backup_state_reset_verification(&db, 7).unwrap();
+
+        let state = db.cloud_backup_state.get().unwrap();
+        assert_eq!(state.status, PersistedCloudBackupStatus::Unverified);
+        assert_eq!(state.wallet_count, Some(7));
+        assert!(state.last_sync.is_some());
+        assert_eq!(state.last_verified_at, None);
+        assert_eq!(state.last_verification_requested_at, None);
+        assert_eq!(state.last_verification_dismissed_at, None);
+        let _ = db.cloud_backup_state.delete();
     }
 }

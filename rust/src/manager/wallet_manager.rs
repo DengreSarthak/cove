@@ -27,6 +27,7 @@ use crate::{
     keychain::{Keychain, KeychainError},
     label_manager::{LabelManager, LabelManagerError},
     loading_popup::with_loading_popup,
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     psbt::Psbt,
     reporting::HistoricalFiatPriceReport,
     router::Route,
@@ -939,7 +940,8 @@ impl RustWalletManager {
 
     #[uniffi::method]
     pub fn set_wallet_type(&self, wallet_type: WalletType) -> Result<(), Error> {
-        let mut metadata = self.metadata.read().clone();
+        let before_metadata = self.metadata.read().clone();
+        let mut metadata = before_metadata.clone();
         metadata.wallet_type = wallet_type;
 
         Database::global()
@@ -948,35 +950,35 @@ impl RustWalletManager {
             .map_err_debug(Error::SetWalletTypeError)?;
 
         *self.metadata.write() = metadata.clone();
-        self.reconciler.send(Message::WalletMetadataChanged(metadata));
+        self.reconciler.send(Message::WalletMetadataChanged(metadata.clone()));
+
+        CLOUD_BACKUP_MANAGER.handle_wallet_metadata_update(&before_metadata, &metadata);
 
         Ok(())
     }
 
     #[uniffi::method]
     pub fn validate_metadata(&self) {
-        let name = {
-            let metadata = self.metadata.read();
-            if !metadata.name.trim().is_empty() {
-                return;
-            }
-            metadata
-                .master_fingerprint
-                .as_deref()
-                .map_or_else(|| "Unnamed Wallet".to_string(), Fingerprint::as_uppercase)
-        };
-
-        let metadata = {
-            let mut metadata = self.metadata.write();
-            metadata.name = name;
-            metadata.clone()
-        };
-
-        self.reconciler.send(Message::WalletMetadataChanged(metadata.clone()));
-
-        if let Err(error) = Database::global().wallets.update_wallet_metadata(metadata) {
-            error!("Unable to update wallet metadata: {error:?}");
+        let before_metadata = self.metadata.read().clone();
+        if !before_metadata.name.trim().is_empty() {
+            return;
         }
+
+        let name = before_metadata
+            .master_fingerprint
+            .as_deref()
+            .map_or_else(|| "Unnamed Wallet".to_string(), Fingerprint::as_uppercase);
+        let mut metadata = before_metadata.clone();
+        metadata.name = name;
+
+        if let Err(error) = Database::global().wallets.update_wallet_metadata(metadata.clone()) {
+            error!("Unable to update wallet metadata: {error:?}");
+            return;
+        }
+
+        *self.metadata.write() = metadata.clone();
+        self.reconciler.send(Message::WalletMetadataChanged(metadata.clone()));
+        CLOUD_BACKUP_MANAGER.handle_wallet_metadata_update(&before_metadata, &metadata);
     }
 
     #[uniffi::method]
@@ -1214,39 +1216,28 @@ impl RustWalletManager {
     /// Action from the frontend to change the state of the view model
     #[uniffi::method]
     pub fn dispatch(&self, action: Action) {
+        let before_metadata = self.metadata.read().clone();
+        let mut candidate = before_metadata.clone();
+
         match action {
-            Action::UpdateName(name) => {
-                let mut metadata = self.metadata.write();
-                metadata.name = name;
-            }
+            Action::UpdateName(name) => candidate.name = name,
 
-            Action::UpdateColor(color) => {
-                let mut metadata = self.metadata.write();
-                metadata.color = color;
-            }
+            Action::UpdateColor(color) => candidate.color = color,
 
-            Action::UpdateUnit(unit) => {
-                let mut metadata = self.metadata.write();
-                metadata.selected_unit = unit;
-            }
+            Action::UpdateUnit(unit) => candidate.selected_unit = unit,
 
             Action::ToggleSensitiveVisibility => {
-                let mut metadata = self.metadata.write();
-                metadata.sensitive_visible = !metadata.sensitive_visible;
+                candidate.sensitive_visible = !candidate.sensitive_visible;
             }
 
             Action::ToggleFiatOrBtc => {
-                let mut metadata = self.metadata.write();
-                metadata.fiat_or_btc = match metadata.fiat_or_btc {
+                candidate.fiat_or_btc = match candidate.fiat_or_btc {
                     FiatOrBtc::Btc => FiatOrBtc::Fiat,
                     FiatOrBtc::Fiat => FiatOrBtc::Btc,
                 };
             }
 
-            Action::UpdateFiatOrBtc(fiat_or_btc) => {
-                let mut metadata = self.metadata.write();
-                metadata.fiat_or_btc = fiat_or_btc;
-            }
+            Action::UpdateFiatOrBtc(fiat_or_btc) => candidate.fiat_or_btc = fiat_or_btc,
 
             Action::ToggleFiatBtcPrimarySecondary => {
                 const ORDER: &[(FiatOrBtc, Unit); 4] = &[
@@ -1256,10 +1247,7 @@ impl RustWalletManager {
                     (FiatOrBtc::Fiat, Unit::Sat),
                 ];
 
-                let current = {
-                    let md = self.metadata.read();
-                    (md.fiat_or_btc, md.selected_unit)
-                };
+                let current = (candidate.fiat_or_btc, candidate.selected_unit);
 
                 let current_index = ORDER
                     .iter()
@@ -1269,31 +1257,24 @@ impl RustWalletManager {
                 let next_index = (current_index + 1) % ORDER.len();
                 let (fiat_or_btc, unit) = ORDER[next_index];
 
-                let mut metadata = self.metadata.write();
-                metadata.fiat_or_btc = fiat_or_btc;
-                metadata.selected_unit = unit;
+                candidate.fiat_or_btc = fiat_or_btc;
+                candidate.selected_unit = unit;
             }
 
             Action::ToggleDetailsExpanded => {
-                let mut metadata = self.metadata.write();
-                metadata.details_expanded = !metadata.details_expanded;
+                candidate.details_expanded = !candidate.details_expanded;
             }
 
             Action::SelectCurrentWalletAddressType => {
-                let mut metadata = self.metadata.write();
-                metadata.discovery_state = DiscoveryState::ChoseAdressType;
+                candidate.discovery_state = DiscoveryState::ChoseAdressType;
             }
 
             Action::SelectDifferentWalletAddressType(wallet_address_type) => {
-                let mut metadata = self.metadata.write();
-                metadata.address_type = wallet_address_type;
-                metadata.discovery_state = DiscoveryState::ChoseAdressType;
+                candidate.address_type = wallet_address_type;
+                candidate.discovery_state = DiscoveryState::ChoseAdressType;
             }
 
-            Action::ToggleShowLabels => {
-                let mut metadata = self.metadata.write();
-                metadata.show_labels = !metadata.show_labels;
-            }
+            Action::ToggleShowLabels => candidate.show_labels = !candidate.show_labels,
 
             Action::SelectedWalletDisappeared => {
                 send!(self.actor.stop_all_scans());
@@ -1305,12 +1286,14 @@ impl RustWalletManager {
             }
         }
 
-        let metadata = self.metadata.read().clone();
-        self.reconciler.send(Message::WalletMetadataChanged(metadata.clone()));
-
-        if let Err(error) = Database::global().wallets.update_wallet_metadata(metadata) {
+        if let Err(error) = Database::global().wallets.update_wallet_metadata(candidate.clone()) {
             error!("Unable to update wallet metadata: {error:?}");
+            return;
         }
+
+        *self.metadata.write() = candidate.clone();
+        self.reconciler.send(Message::WalletMetadataChanged(candidate.clone()));
+        CLOUD_BACKUP_MANAGER.handle_wallet_metadata_update(&before_metadata, &candidate);
     }
 }
 

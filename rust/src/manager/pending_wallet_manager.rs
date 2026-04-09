@@ -130,7 +130,7 @@ impl RustPendingWalletManager {
             self.state.read().wallet.mnemonic.clone(),
             None,
         )?;
-        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
+        CLOUD_BACKUP_MANAGER.handle_wallet_set_change();
 
         Ok(wallet.metadata)
     }

@@ -21,7 +21,7 @@ use cove_util::result_ext::ResultExt as _;
 use std::{path::PathBuf, sync::Arc};
 
 use arc_swap::ArcSwap;
-use cloud_backup::{CloudBackupStateTable, CloudUploadQueueTable};
+use cloud_backup::{CloudBackupStateTable, CloudBlobSyncStateTable};
 use global_cache::GlobalCacheTable;
 use global_config::GlobalConfigTable;
 use global_flag::GlobalFlagTable;
@@ -46,7 +46,7 @@ pub struct Database {
     pub global_config: GlobalConfigTable,
     pub global_cache: GlobalCacheTable,
     pub cloud_backup_state: CloudBackupStateTable,
-    pub cloud_upload_queue: CloudUploadQueueTable,
+    pub cloud_blob_sync_states: CloudBlobSyncStateTable,
     pub wallets: WalletsTable,
     pub unsigned_transactions: UnsignedTransactionsTable,
     pub historical_prices: HistoricalPriceTable,
@@ -132,7 +132,7 @@ impl Database {
         let global_config = GlobalConfigTable::new(main_db_arc.clone(), &write_txn);
         let global_cache = GlobalCacheTable::new(main_db_arc.clone(), &write_txn);
         let cloud_backup_state = CloudBackupStateTable::new(main_db_arc.clone(), &write_txn);
-        let cloud_upload_queue = CloudUploadQueueTable::new(main_db_arc.clone(), &write_txn);
+        let cloud_blob_sync_states = CloudBlobSyncStateTable::new(main_db_arc.clone(), &write_txn);
         let unsigned_transactions = UnsignedTransactionsTable::new(main_db_arc.clone(), &write_txn);
         let historical_prices = HistoricalPriceTable::new(main_db_arc.clone(), &write_txn);
 
@@ -143,7 +143,7 @@ impl Database {
             global_config,
             global_cache,
             cloud_backup_state,
-            cloud_upload_queue,
+            cloud_blob_sync_states,
             wallets,
             unsigned_transactions,
             historical_prices,

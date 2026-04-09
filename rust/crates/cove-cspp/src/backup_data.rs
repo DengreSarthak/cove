@@ -56,6 +56,13 @@ pub struct WalletEntry {
     pub xpub: Option<String>,
     #[zeroize(skip)]
     pub wallet_mode: WalletMode,
+    #[serde(with = "base64_serde::option")]
+    pub labels_zstd_jsonl: Option<Vec<u8>>,
+    pub labels_count: u32,
+    pub labels_hash: Option<String>,
+    pub labels_uncompressed_size: Option<u32>,
+    pub content_revision_hash: String,
+    pub updated_at: u64,
 }
 
 /// Secret material for a wallet
@@ -153,6 +160,12 @@ mod tests {
             }),
             xpub: Some("xpub661MyMwAqRbcF...".to_string()),
             wallet_mode: WalletMode::Main,
+            labels_zstd_jsonl: Some(vec![1, 2, 3]),
+            labels_count: 2,
+            labels_hash: Some("labels-hash".to_string()),
+            labels_uncompressed_size: Some(123),
+            content_revision_hash: "content-hash".to_string(),
+            updated_at: 42,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -164,6 +177,28 @@ mod tests {
         );
         assert!(decoded.descriptors.is_some());
         assert_eq!(decoded.wallet_mode, WalletMode::Main);
+        assert_eq!(decoded.labels_zstd_jsonl, Some(vec![1, 2, 3]));
+        assert_eq!(decoded.labels_count, 2);
+        assert_eq!(decoded.labels_hash.as_deref(), Some("labels-hash"));
+        assert_eq!(decoded.labels_uncompressed_size, Some(123));
+        assert_eq!(decoded.content_revision_hash, "content-hash");
+        assert_eq!(decoded.updated_at, 42);
+    }
+
+    #[test]
+    fn wallet_entry_json_rejects_missing_new_fields() {
+        let json = serde_json::json!({
+            "wallet_id": "test-wallet",
+            "secret": "WatchOnly",
+            "metadata": {"name": "Test Wallet"},
+            "descriptors": null,
+            "xpub": null,
+            "wallet_mode": "Main"
+        });
+
+        let error = serde_json::from_value::<WalletEntry>(json).unwrap_err();
+
+        assert!(error.to_string().contains("labels_zstd_jsonl"));
     }
 
     #[test]
