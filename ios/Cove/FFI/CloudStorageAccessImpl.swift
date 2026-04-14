@@ -65,4 +65,8 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     func isBackupUploaded(namespace: String, recordId: String) throws -> Bool {
         try helper.isBackupUploaded(namespace: namespace, recordId: recordId)
     }
+
+    func overallSyncHealth() -> CloudSyncHealth {
+        helper.overallSyncHealth()
+    }
 }

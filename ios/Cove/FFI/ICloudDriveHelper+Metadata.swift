@@ -37,7 +37,86 @@ private struct OptionalMetadataQueryResult<Value> {
     let value: Value?
 }
 
+final class SyncHealthObserver {
+    private let query = NSMetadataQuery()
+    private let box = ICloudDriveHelper.ObserverBox()
+    private let settleInterval: TimeInterval
+    private let onChange: @Sendable () -> Void
+    private var notifyWorkItem: DispatchWorkItem?
+
+    init(settleInterval: TimeInterval, onChange: @escaping @Sendable () -> Void) {
+        self.settleInterval = settleInterval
+        self.onChange = onChange
+    }
+
+    func start() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard !query.isStarted else { return }
+
+            query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
+            query.predicate = NSPredicate(value: true)
+
+            box.add(
+                NotificationCenter.default.addObserver(
+                    forName: .NSMetadataQueryDidFinishGathering,
+                    object: query,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.scheduleNotify()
+                }
+            )
+            box.add(
+                NotificationCenter.default.addObserver(
+                    forName: .NSMetadataQueryDidUpdate,
+                    object: query,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.scheduleNotify()
+                }
+            )
+
+            if !query.start() {
+                box.removeAll()
+            }
+        }
+    }
+
+    func stop() {
+        if Thread.isMainThread {
+            stopOnMain()
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.stopOnMain()
+        }
+    }
+
+    private func scheduleNotify() {
+        notifyWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [onChange] in
+            onChange()
+        }
+        notifyWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + settleInterval, execute: workItem)
+    }
+
+    private func stopOnMain() {
+        notifyWorkItem?.cancel()
+        notifyWorkItem = nil
+        query.stop()
+        box.removeAll()
+    }
+}
+
 extension ICloudDriveHelper {
+    func makeSyncHealthObserver(
+        onChange: @escaping @Sendable () -> Void
+    ) -> SyncHealthObserver {
+        SyncHealthObserver(settleInterval: metadataSettleInterval, onChange: onChange)
+    }
+
     // MARK: - Cloud presence via NSMetadataQuery
 
     private func startMetadataQuery(

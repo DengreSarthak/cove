@@ -11,7 +11,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
     private let pollInterval: TimeInterval = 0.1
     let metadataSettleInterval: TimeInterval = 0.5
     private let progressLogInterval: TimeInterval = 1
-    private let legacyFileReadNoSuchFileError = 4
+    private static let legacyFileReadNoSuchFileError = 4
 
     final class ObserverBox {
         private var observers: [NSObjectProtocol] = []
@@ -569,7 +569,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
             if nsError.domain == NSCocoaErrorDomain,
                nsError.code == NSFileReadNoSuchFileError
                // some iCloud missing-file cases surface as legacy Cocoa code 4
-               || nsError.code == legacyFileReadNoSuchFileError
+               || nsError.code == Self.legacyFileReadNoSuchFileError
             {
                 throw CloudStorageError.NotFound(recordId)
             }
@@ -771,12 +771,13 @@ final class ICloudDriveHelper: @unchecked Sendable {
     private static func isNoSuchFileError(_ error: Error) -> Bool {
         let nsError = error as NSError
         guard nsError.domain == NSCocoaErrorDomain else { return false }
-        return nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError
-            || nsError.code == 4
+        return nsError.code == NSFileNoSuchFileError
+            || nsError.code == NSFileReadNoSuchFileError
+            || nsError.code == Self.legacyFileReadNoSuchFileError
     }
 
     /// Checks sync health of all files in namespace directories
-    func overallSyncHealth() -> SyncHealth {
+    func overallSyncHealth() -> CloudSyncHealth {
         guard let namespacesRoot = try? namespacesRootURL() else { return .unavailable }
 
         guard
@@ -820,13 +821,5 @@ final class ICloudDriveHelper: @unchecked Sendable {
         if anyFailed { return .failed(failureMessage ?? "upload error") }
         if allUploaded { return .allUploaded }
         return .uploading
-    }
-
-    enum SyncHealth {
-        case allUploaded
-        case uploading
-        case failed(String)
-        case noFiles
-        case unavailable
     }
 }
