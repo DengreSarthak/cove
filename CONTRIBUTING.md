@@ -1,5 +1,11 @@
 # Contributing to Cove
 
+## Philosophy
+
+Cove is a simple, intuitive, but powerful Bitcoin wallet. The goal is to help new users get up and running quickly while still supporting the features power users need, such as hardware wallet support.
+
+That balance matters whenever adding new functionality. Every feature must earn its place by remaining simple and intuitive. If we cannot make a feature feel simple and intuitive, we probably should not add it.
+
 ## Prerequisites
 
 - [Rust](https://rustup.rs)
