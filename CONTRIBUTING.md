@@ -12,8 +12,14 @@ That balance matters whenever adding new functionality. Every feature must earn 
 - [Just](https://github.com/casey/just) (`cargo install just`)
 - `cargo-nextest` (`cargo install cargo-nextest`)
 - **iOS**: Xcode 16.0+, swiftformat
-- **Android**: Android Studio + NDK, Java/JDK
+- **Android**: Android Studio + NDK, Java 17/JDK
 - **Optional**: bacon, watchexec
+
+## Environment Setup
+
+Copy `.envrc.example` to your preferred local environment setup and load the Android variables before running Android builds. At minimum, make sure `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`, and `JAVA_HOME` are set correctly for your machine.
+
+The `COVE_KEYSTORE_*` variables in `.envrc.example` are only needed for signed Android release builds and bundles. Regular development work does not require them.
 
 ## Quick Start
 
@@ -71,6 +77,12 @@ Then build a signed APK/AAB via Android Studio (Build → Generate Signed Bundle
 | `just clean` | - | Remove build artifacts |
 
 Run `just` to see the public recipes. Aliases are shortcuts for commands you use often.
+
+### Generated Code
+
+- Do not manually edit generated UniFFI bindings
+- Regenerate bindings with `just build-ios` or `just build-android` after changing exported Rust APIs
+- Use `just compile-ios` and `just compile-android` only when Rust exports have not changed
 
 ### Debugging Tips
 
